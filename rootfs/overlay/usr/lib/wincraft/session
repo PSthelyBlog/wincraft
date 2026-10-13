@@ -5,6 +5,11 @@
 export PATH=/usr/bin
 export DISPLAY=:0
 
+# With ntsync, Wine's server holds one file descriptor per synchronisation
+# object, and a web browser needs more than the kernel's default hard limit of
+# 4096. Raise the hard limit only: Wine lifts its own soft limit to match.
+ulimit -Hn 524288
+
 rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
 /usr/lib/Xorg :0 vt1 -nolisten tcp -ac -noreset -logfile /run/log/Xorg.0.log &
 xpid=$!
