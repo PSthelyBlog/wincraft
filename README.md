@@ -179,8 +179,11 @@ and lays those over the packaged files.
   server, to shared headers or to a module with a Unix-side part is refused.
 - The build stops when Arch moves to a newer Wine than `wine/VERSION`: bump
   the version and checksum, and drop the patches the new release already has.
-- Each patch says why it exists and whether WineHQ has it. They are meant to
-  go upstream, not to stay here.
+- Each patch says why it exists and where WineHQ stands on the same problem,
+  and stays only until a Wine release makes it unnecessary.
+- WineHQ does not accept LLM-generated code. A patch written with an LLM, as
+  the current one was, cannot be sent there; it points to the matching WineHQ
+  bug or merge request instead.
 
 ## Layout
 

@@ -10,7 +10,10 @@ Firefox logs that the helper could not be launched and carries on. Returning
 the real SID instead makes Firefox go further into the app container setup,
 where it fails one of its own checks, so the stub is deliberate.
 
-Status: not yet sent to WineHQ.
+Status: not for WineHQ as it stands. This patch was written with an LLM, and
+WineHQ does not accept LLM-generated code. WineHQ merge request !6793, written
+independently and open since 2024, adds the same stub:
+https://gitlab.winehq.org/wine/wine/-/merge_requests/6793
 ---
 --- a/dlls/userenv/userenv.spec
 +++ b/dlls/userenv/userenv.spec
