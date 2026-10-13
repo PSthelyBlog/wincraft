@@ -10,18 +10,18 @@ Start menu, and there is nothing else on the disk.
 - runs live from the ISO, or installs to disk in under a minute
 - 64-bit and 32-bit Windows programs
 
-**Status: 0.1, a working preview.** Read [What it is not](#what-it-is-not)
+**Status: 0.2, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
 
 ![The WinCraft desktop: Start menu, Notepad and Minesweeper](docs/screenshot.png)
 
 ## Download
 
-Get `wincraft-0.1-x86_64.iso` from the [releases page](../../releases) and
+Get `wincraft-0.2-x86_64.iso` from the [releases page](../../releases) and
 check it against the `.sha256` file published next to it:
 
 ```sh
-sha256sum -c wincraft-0.1-x86_64.iso.sha256
+sha256sum -c wincraft-0.2-x86_64.iso.sha256
 ```
 
 Then boot it in a virtual machine. This is the configuration it was tested
@@ -30,7 +30,7 @@ with (4 GB of RAM, 4 CPUs):
 ```sh
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -device VGA -device qemu-xhci -device usb-tablet -device usb-kbd \
-    -nic user,model=virtio-net-pci -cdrom wincraft-0.1-x86_64.iso
+    -nic user,model=virtio-net-pci -cdrom wincraft-0.2-x86_64.iso
 ```
 
 Guest drivers for VirtualBox, VMware and Hyper-V are built into the kernel,
@@ -78,6 +78,8 @@ Verified in QEMU, booting the ISO, unless noted:
 - Third-party software (tested in the native desktop session, `./wc desktop`):
   the **7-Zip** installer downloaded with *Download a Program*, installed,
   appeared in the Start menu and ran; both the 64-bit and the 32-bit builds.
+- **Firefox 158**, downloaded and installed with *Download a Program* in a
+  live session with 8 GB of RAM: browsing works and YouTube plays video.
 
 ## What it is not
 
@@ -94,7 +96,8 @@ Be clear-eyed about these before you depend on it:
   the firmware framebuffer. There is no Vulkan (so no Direct3D 12).
 - **No Wi-Fi, no Bluetooth.** Both need firmware blobs and supporting
   services that are not in the image. Wired Ethernet only.
-- **No web browser included.** Use *Download a Program* → *Get Firefox*.
+- **No web browser included.** Use *Download a Program* → *Get Firefox*, and
+  give a live session 8 GB of RAM for it: 4 GB is not enough.
 - **No media codecs** (Media Foundation / DirectShow playback), no printing.
 - **.NET programs** need Wine Mono, which Wine offers to download on first use.
 - Notification-area icons appear in a small floating window above the clock
@@ -111,7 +114,7 @@ Be clear-eyed about these before you depend on it:
 After [building](#build-it), the same ISO is in `out/`:
 
 ```sh
-./wc run                 # boots out/wincraft-0.1-x86_64.iso in a QEMU window
+./wc run                 # boots out/wincraft-0.2-x86_64.iso in a QEMU window
 ./wc run --uefi          # same, UEFI firmware
 ./wc run --disk build/vm/disk.qcow2:20G     # with a blank disk to install to
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
@@ -122,7 +125,7 @@ the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
 
 To put it on a USB stick, write the ISO to the whole device
-(`dd if=out/wincraft-0.1-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
+(`dd if=out/wincraft-0.2-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
 
 ### Boot options
 
