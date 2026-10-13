@@ -1,0 +1,104 @@
+#!/bin/bash
+# vm - boot WinCraft OS in QEMU (QEMU itself lives in the build toolbox).
+#
+#   tools/vm                      boot the ISO in a window
+#   tools/vm --headless           no window; drive it with tools/qmp.py
+#   tools/vm --uefi               UEFI firmware instead of BIOS
+#   tools/vm --disk FILE[:SIZE]   attach a virtual hard disk (created if missing)
+#   tools/vm --no-iso             boot from the disk only
+#   tools/vm --direct "ARGS"      skip the boot loader: load kernel + initramfs
+#                                 directly with this kernel command line
+#   tools/vm --mem MB --smp N --res WxH --share DIR
+#
+# Hardware virtualisation (KVM) is used when /dev/kvm is available; otherwise
+# QEMU falls back to software emulation, which works but is many times slower.
+set -euo pipefail
+
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION=$(cat "$PROJECT/VERSION")
+ISO=/work/out/wincraft-$VERSION-x86_64.iso
+VM=/work/build/vm
+
+headless=0 uefi=0 disk= direct= mem=4096 smp=4 res=1280x800 use_iso=1 share=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --headless) headless=1 ;;
+        --uefi)     uefi=1 ;;
+        --no-iso)   use_iso=0 ;;
+        --disk)     disk=$2; shift ;;
+        --direct)   direct=$2; shift ;;
+        --mem)      mem=$2; shift ;;
+        --smp)      smp=$2; shift ;;
+        --res)      res=$2; shift ;;
+        --share)    share=$2; shift ;;
+        -h|--help)  sed -n '2,15p' "$0"; exit 0 ;;
+        *) echo "vm: unknown option $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+mkdir -p "$PROJECT/build/vm"
+rm -f "$PROJECT/build/vm/qmp.sock" "$PROJECT/build/vm/serial.sock"
+
+args=(-name "WinCraft OS" -machine q35 -m "$mem" -smp "$smp")
+if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    args+=(-accel kvm -cpu host)
+else
+    echo "vm: /dev/kvm not available - using software emulation (slow)" >&2
+    args+=(-accel tcg,thread=multi,tb-size=1024 -cpu max)
+fi
+
+args+=(-device "VGA,xres=${res%x*},yres=${res#*x}"
+       -device qemu-xhci -device usb-tablet -device usb-kbd
+       -nic user,model=virtio-net-pci
+       -rtc base=utc
+       -qmp "unix:$VM/qmp.sock,server=on,wait=off"
+       -chardev "socket,id=ser0,path=$VM/serial.sock,server=on,wait=off,logfile=$VM/serial.log"
+       -serial chardev:ser0)
+
+if [ "$uefi" = 1 ]; then
+    [ -f "$PROJECT/build/vm/OVMF_VARS.fd" ] ||
+        "$PROJECT/tools/tb" cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$VM/OVMF_VARS.fd"
+    args+=(-drive "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd"
+           -drive "if=pflash,format=raw,file=$VM/OVMF_VARS.fd")
+fi
+
+[ "$use_iso" = 1 ] && args+=(-drive "file=$ISO,media=cdrom,readonly=on,if=none,id=cd0"
+                             -device ide-cd,drive=cd0,bootindex=2)
+
+if [ -n "$disk" ]; then
+    size=20G
+    case "$disk" in *:*) size=${disk##*:}; disk=${disk%%:*} ;; esac
+    case "$disk" in /*) ;; *) disk=/work/$disk ;; esac
+    host_disk=${disk/#\/work/$PROJECT}
+    [ -f "$host_disk" ] || "$PROJECT/tools/tb" qemu-img create -q -f qcow2 "$disk" "$size"
+    args+=(-drive "file=$disk,format=qcow2,if=none,id=hd0" -device virtio-blk-pci,drive=hd0,bootindex=1)
+fi
+
+if [ -n "$share" ]; then
+    args+=(-virtfs "local,path=$share,mount_tag=host,security_model=none,readonly=on")
+fi
+
+if [ -n "$direct" ]; then
+    args+=(-kernel /work/build/iso/boot/vmlinuz -initrd /work/build/iso/boot/initramfs.img
+           -append "$direct")
+fi
+
+if [ "$headless" = 1 ]; then
+    args+=(-display none -audiodev none,id=snd0)
+    gui=0
+else
+    # Sound goes to the host's PulseAudio-compatible socket when there is one
+    # (WC_AUDIO=none to force silence).
+    runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    if [ "${WC_AUDIO:-}" != none ] && [ -S "$runtime/pulse/native" ]; then
+        args+=(-audiodev pa,id=snd0,server=unix:/run/host/pulse/native)
+    else
+        args+=(-audiodev none,id=snd0)
+    fi
+    args+=(-display gtk,zoom-to-fit=on)
+    gui=1
+fi
+args+=(-device intel-hda -device hda-output,audiodev=snd0)
+
+exec env TB_GUI=$gui "$PROJECT/tools/tb" qemu-system-x86_64 "${args[@]}"

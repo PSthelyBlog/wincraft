@@ -1,0 +1,24 @@
+#!/bin/sh
+# udhcpc lease handler.
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface"
+        ip link set "$interface" up
+        ;;
+    bound|renew)
+        ip addr flush dev "$interface"
+        ip addr add "$ip/${mask:-24}" ${broadcast:+broadcast "$broadcast"} dev "$interface"
+        if [ -n "$router" ]; then
+            ip route del default dev "$interface" 2>/dev/null
+            for gw in $router; do
+                ip route add default via "$gw" dev "$interface" && break
+            done
+        fi
+        {
+            [ -n "$domain" ] && echo "search $domain"
+            for ns in $dns; do echo "nameserver $ns"; done
+        } > /run/resolv.conf.new
+        mv /run/resolv.conf.new /run/resolv.conf
+        ;;
+esac
+exit 0

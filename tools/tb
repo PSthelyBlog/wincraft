@@ -1,0 +1,59 @@
+#!/bin/bash
+# tb - run a command inside the rootless WinCraft build toolbox.
+#
+# The toolbox is an Arch Linux root in build/toolbox, entered through user
+# namespaces (no sudo, nothing installed on the host). Inside, we are "root"
+# with a full uid range mapped from /etc/subuid, so pacman, chroot, mknod-free
+# rootfs assembly and mksquashfs all behave as they would for real root.
+#
+#   tools/tb <command...>      run command (cwd = /work = project root)
+#   tools/tb                   interactive shell
+#
+# Env: TB_GUI=1 binds the host Wayland/X sockets (used to show the QEMU window).
+set -euo pipefail
+
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TB="$PROJECT/build/toolbox"
+[ -d "$TB/usr" ] || { echo "tb: toolbox not found at $TB (run ./wc toolbox)" >&2; exit 1; }
+
+export TB PROJECT
+export TB_GUI="${TB_GUI:-0}"
+export TB_RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export TB_WAYLAND="${WAYLAND_DISPLAY:-}"
+export TB_DISPLAY="${DISPLAY:-}"
+export TB_TERM="${TERM:-xterm}"
+
+[ $# -eq 0 ] && set -- /bin/bash
+
+exec unshare --user --map-root-user --map-auto --mount --pid --fork --kill-child \
+  /bin/bash -c '
+set -e
+mount --make-rprivate /
+mount --rbind "$TB" "$TB"
+mount -t proc proc "$TB/proc"
+mount --rbind /sys "$TB/sys"
+mount --rbind /dev "$TB/dev"
+mount -t tmpfs -o mode=1777 tmpfs "$TB/tmp"
+mount -t tmpfs -o mode=755 tmpfs "$TB/run"
+mkdir -p "$TB/work"
+mount --rbind "$PROJECT" "$TB/work"
+cat /etc/resolv.conf > "$TB/etc/resolv.conf" 2>/dev/null || true
+genv=()
+if [ "$TB_GUI" = 1 ]; then
+  mkdir -p "$TB/run/host"
+  mount --rbind "$TB_RUNTIME" "$TB/run/host"
+  genv+=(XDG_RUNTIME_DIR=/run/host)
+  [ -n "$TB_WAYLAND" ] && genv+=(WAYLAND_DISPLAY="$TB_WAYLAND")
+  if [ -n "$TB_DISPLAY" ] && [ -d /tmp/.X11-unix ]; then
+    mkdir -p "$TB/tmp/.X11-unix"
+    mount --rbind /tmp/.X11-unix "$TB/tmp/.X11-unix"
+    genv+=(DISPLAY="$TB_DISPLAY")
+  fi
+fi
+cd "$TB"
+exec chroot "$TB" /usr/bin/env -i \
+  HOME=/root USER=root LOGNAME=root TERM="$TB_TERM" LANG=C.UTF-8 \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/bin/core_perl \
+  MAKEFLAGS="-j$(nproc)" "${genv[@]}" \
+  /bin/bash -c "cd /work && exec \"\$@\"" tb "$@"
+' tb-enter "$@"

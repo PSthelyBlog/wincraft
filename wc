@@ -1,0 +1,89 @@
+#!/bin/bash
+# wc - build and run WinCraft OS.
+#
+#   ./wc build            everything: toolbox, kernel, root filesystem, ISO
+#   ./wc toolbox          create the build toolbox (rootless Arch Linux root)
+#   ./wc kernel           configure and compile the kernel
+#   ./wc stage            download the packages the root filesystem is cut from
+#   ./wc rootfs           assemble the root filesystem
+#   ./wc iso              initramfs + system image + bootable ISO  -> out/
+#   ./wc run [options]    boot the ISO in QEMU   (see tools/vm --help)
+#   ./wc desktop          run just the desktop session, natively (tools/xtest)
+#   ./wc shell            a shell inside the toolbox
+#   ./wc clean            delete build/ and out/
+#
+# Nothing is installed on the host and no root access is needed: the build
+# runs inside build/toolbox through user namespaces. Requirements on the host:
+# bash, curl, tar, zstd, util-linux (unshare), newuidmap/newgidmap and a
+# subuid/subgid range for your user.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+PROJECT=$PWD
+
+TOOLBOX_PACKAGES="base-devel bc cpio libisoburn mtools dosfstools squashfs-tools e2fsprogs
+    limine openssl libelf perl python rsync git kmod inetutils xz zstd lz4 imagemagick
+    qemu-system-x86 qemu-ui-gtk qemu-ui-sdl qemu-hw-display-virtio-gpu
+    qemu-hw-display-virtio-vga qemu-audio-pipewire qemu-audio-pa qemu-img edk2-ovmf
+    mingw-w64-gcc wine libx11 xorg-server-xvfb xorg-xrandr xorg-xprop xorg-xwininfo
+    xdotool maim ttf-liberation"
+MIRROR=https://geo.mirror.pkgbuild.com
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+
+toolbox() {
+    [ -x build/toolbox/usr/bin/pacman ] && [ -f build/.toolbox-ready ] && return 0
+    local dl=build/dl/bootstrap tar=archlinux-bootstrap-x86_64.tar.zst
+    mkdir -p "$dl"
+    if [ ! -f "$dl/$tar" ]; then
+        say "Downloading the Arch Linux bootstrap"
+        curl -fL -o "$dl/$tar" "$MIRROR/iso/latest/$tar"
+        curl -fsSL -o "$dl/$tar.sig" "$MIRROR/iso/latest/$tar.sig"
+    fi
+    if [ -f /usr/share/pacman/keyrings/archlinux.gpg ] && command -v gpg >/dev/null; then
+        say "Verifying its signature"
+        local home; home=$(mktemp -d)
+        gpg --homedir "$home" --batch --quiet --import /usr/share/pacman/keyrings/archlinux.gpg 2>/dev/null
+        gpg --homedir "$home" --batch --verify "$dl/$tar.sig" "$dl/$tar" 2>&1 | grep -q 'Good signature' ||
+            { rm -rf "$home"; echo "wc: bad signature on $tar" >&2; exit 1; }
+        rm -rf "$home"
+    else
+        echo "wc: no Arch keyring on this host - bootstrap signature NOT verified" >&2
+    fi
+    if [ ! -x build/toolbox/usr/bin/pacman ]; then
+        say "Unpacking the toolbox"
+        unshare --user --map-root-user --map-auto -- \
+            tar --numeric-owner -xpf "$dl/$tar" -C build/ 2>/dev/null
+        mv build/root.x86_64 build/toolbox
+    fi
+    say "Installing build tools (about 4 GB)"
+    tools/tb bash -c '
+        set -e
+        printf "Server = '"$MIRROR"'/\$repo/os/\$arch\n" > /etc/pacman.d/mirrorlist
+        sed -i -e "s/^CheckSpace/#CheckSpace/" -e "s/^#\?ParallelDownloads.*/ParallelDownloads = 8/" \
+               -e "s/^#\?DownloadUser.*/#DownloadUser = alpm/" /etc/pacman.conf
+        grep -q "^DisableSandbox" /etc/pacman.conf || sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+        [ -d /etc/pacman.d/gnupg/private-keys-v1.d ] || { pacman-key --init; pacman-key --populate archlinux; } >/dev/null 2>&1
+        pacman -Syu --noconfirm --needed '"$(echo $TOOLBOX_PACKAGES)"' >/work/build/toolbox.log 2>&1 ||
+            { tail -20 /work/build/toolbox.log; exit 1; }
+    '
+    touch build/.toolbox-ready
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    build)    mkdir -p build; toolbox; tools/tb /work/tools/build.sh all ;;
+    toolbox)  mkdir -p build; toolbox ;;
+    kernel|stage|rootfs|iso)
+              toolbox; tools/tb /work/tools/build.sh "$cmd" ;;
+    run)      exec tools/vm "$@" ;;
+    desktop)  exec tools/xtest start "$@" ;;
+    shell)    toolbox; exec tools/tb "$@" ;;
+    clean)
+        # Files in build/ belong to the toolbox's user-id range: remove them
+        # the same way they were created.
+        [ -d build ] && unshare --user --map-root-user --map-auto -- rm -rf build
+        rm -rf out
+        ;;
+    *)        sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac

@@ -1,0 +1,96 @@
+#!/bin/busybox sh
+# WinCraft OS early userspace.
+#
+# Finds the system image and hands over to wcinit.
+#
+# WinCraft always runs from one read-only image (wincraft/system.sfs on the
+# volume labelled WINCRAFT) with a writable layer on top:
+#   - a partition labelled WINCRAFT_DATA, if there is one: changes persist
+#     (this is what an installed system has);
+#   - otherwise RAM: a live session that leaves no trace.
+# Options: wc.toram    copy the image to RAM so the medium can be removed
+#          wc.nodata   ignore WINCRAFT_DATA for this boot (live session)
+#          wc.break    drop to a shell before switching root
+#          root=...    boot a plain root filesystem instead of the image
+
+/bin/busybox mkdir -p /proc /sys /dev /run /mnt/medium /mnt/system /mnt/rw /newroot
+/bin/busybox --install -s /bin
+export PATH=/bin
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+rescue() {
+    echo
+    echo "WinCraft OS could not start: $*"
+    echo "Dropping to a rescue shell. 'reboot -f' restarts the machine."
+    exec setsid cttyhack sh
+}
+
+live= root= toram= brk= nodata=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        wc.live)   live=1 ;;
+        wc.toram)  toram=1 ;;
+        wc.nodata) nodata=1 ;;
+        wc.break)  brk=1 ;;
+        root=*)   root=${arg#root=} ;;
+    esac
+done
+
+# Storage controllers and USB sticks appear asynchronously.
+wait_for() {
+    n=0
+    while [ "$n" -lt 150 ]; do
+        dev=$(findfs "$1" 2>/dev/null) && [ -b "$dev" ] && { echo "$dev"; return 0; }
+        n=$((n + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+if [ -n "$live" ]; then
+    dev=$(wait_for LABEL=WINCRAFT) || rescue "boot medium (label WINCRAFT) not found"
+    mount -o ro "$dev" /mnt/medium || rescue "cannot mount boot medium $dev"
+    img=/mnt/medium/wincraft/system.sfs
+    [ -f "$img" ] || rescue "system image missing on $dev"
+
+    # Writable layer: the data partition when present, else memory.
+    data=
+    [ -n "$nodata" ] || data=$(findfs LABEL=WINCRAFT_DATA 2>/dev/null)
+    if [ -n "$data" ] && mount -t ext4 -o rw,noatime "$data" /mnt/rw 2>/dev/null; then
+        toram=
+    else
+        data=
+        mount -t tmpfs -o mode=0755,size=75% tmpfs /mnt/rw
+    fi
+    if [ -n "$toram" ]; then
+        echo "Copying WinCraft OS to memory..."
+        cp "$img" /mnt/rw/system.sfs && img=/mnt/rw/system.sfs
+    fi
+    mount -t squashfs -o ro,loop "$img" /mnt/system || rescue "cannot mount system image"
+    [ -n "$toram" ] && umount /mnt/medium
+
+    mkdir -p /mnt/rw/upper /mnt/rw/work
+    mount -t overlay -o lowerdir=/mnt/system,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work \
+        wincraft /newroot || rescue "cannot assemble the live root"
+    mount --move /mnt/system /newroot/live/system
+    [ -n "$toram" ] || mount --move /mnt/medium /newroot/live/medium
+    [ -n "$data" ] && mount --bind /mnt/rw /newroot/live/data
+elif [ -n "$root" ]; then
+    case "$root" in
+        /dev/*) n=0; while [ ! -b "$root" ] && [ "$n" -lt 150 ]; do n=$((n + 1)); sleep 0.2; done; dev=$root ;;
+        *)      dev=$(wait_for "$root") || rescue "root device $root not found" ;;
+    esac
+    mount -o rw "$dev" /newroot || rescue "cannot mount root device $dev"
+else
+    rescue "no wc.live or root= on the kernel command line"
+fi
+
+[ -x /newroot/usr/bin/wcinit ] || rescue "no WinCraft system on the root device"
+[ -n "$brk" ] && { echo "wc.break: exit this shell to continue booting"; setsid cttyhack sh; }
+
+mount --move /dev /newroot/dev
+umount /sys /proc
+exec switch_root /newroot /usr/bin/wcinit

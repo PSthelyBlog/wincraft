@@ -1,0 +1,90 @@
+#!/bin/bash
+# xtest - run the WinCraft desktop session at native speed, without a VM.
+#
+# Starts a virtual X display in the toolbox and runs the real session scripts
+# from build/rootfs on a throw-away overlay, so nothing in the image changes.
+# Meant for developing the shell: no kernel, init or hardware involved.
+#
+#   tools/xtest start [WxH]     start the session (stays in the foreground)
+#   tools/xtest run "<cmd>"     run a shell command next to the session
+#                               ($DISPLAY set; `inroot <cmd>` enters the image
+#                               as the desktop user)
+#   tools/xtest shot FILE.png   screenshot
+#   tools/xtest stop
+set -euo pipefail
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+X="$PROJECT/build/xtest"
+
+case "${1:-}" in
+start)
+    mkdir -p "$X"; rm -f "$X"/cmd "$X"/out "$X"/done "$X"/stop
+    exec "$PROJECT/tools/tb" bash -c '
+        set -e
+        res=${1:-1280x800}
+        R=/tmp/xt/root
+        mkdir -p /tmp/xt/up /tmp/xt/work $R
+        mount -t overlay overlay -o lowerdir=/work/build/rootfs,upperdir=/tmp/xt/up,workdir=/tmp/xt/work,userxattr $R
+        mount -t proc proc $R/proc
+        mount --rbind /dev $R/dev
+        mount -t tmpfs -o mode=1777 tmpfs $R/tmp
+        mount -t tmpfs -o mode=755 tmpfs $R/run
+        mkdir -p $R/run/user/1000 $R/tmp/.X11-unix /tmp/.X11-unix
+        cp /etc/resolv.conf $R/run/resolv.conf
+        chown 1000:1000 $R/run/user/1000
+        Xvfb :99 -screen 0 ${res}x24 -nolisten tcp -ac -noreset >/dev/null 2>&1 &
+        sleep 1
+        mount --rbind /tmp/.X11-unix $R/tmp/.X11-unix
+        export DISPLAY=:99
+        inroot() {
+            chroot --userspec=1000:1000 $R /usr/bin/env -i HOME=/home/user USER=user LOGNAME=user \
+                PATH=/usr/bin LANG=C.UTF-8 DISPLAY=:99 XDG_RUNTIME_DIR=/run/user/1000 \
+                WINEPREFIX=/home/user/.wine WINEDEBUG=${WINEDEBUG:--all} \
+                WINEDLLOVERRIDES="winemenubuilder.exe=d" "$@"
+        }
+        export -f inroot; export R
+        # Always test the freshly built shell and current defaults.
+        [ -d /work/build/native ] && install -m755 /work/build/native/* $R/usr/bin/
+        export WINCRAFT_TASKBAR=44
+        if [ -f /work/build/shell/wcshell.exe ]; then
+            install -m755 /work/build/shell/*.exe $R/usr/lib/wincraft/
+            cp /work/rootfs/wincraft.reg $R/tmp/wincraft.reg
+            inroot wine regedit /S "Z:\\tmp\\wincraft.reg" >/dev/null 2>&1
+            inroot wine /usr/lib/wincraft/wcshell.exe /setup >/dev/null 2>&1
+            inroot wineserver -w
+        fi
+        rsync -a /work/rootfs/overlay/usr/lib/wincraft/ $R/usr/lib/wincraft/
+        inroot /usr/lib/wincraft/desktop > /work/build/xtest/session.log 2>&1 &
+        echo "xtest: session running on :99 ($res)"
+        while [ ! -e /work/build/xtest/stop ]; do
+            if [ -f /work/build/xtest/cmd ]; then
+                bash /work/build/xtest/cmd > /work/build/xtest/out 2>&1 || true
+                rm -f /work/build/xtest/cmd
+                : > /work/build/xtest/done
+            fi
+            sleep 0.1
+        done
+        inroot wineserver -k || true
+    ' xtest "${2:-1280x800}"
+    ;;
+run)
+    rm -f "$X/done" "$X/out"
+    printf '%s\n' "$2" > "$X/cmd.tmp" && mv "$X/cmd.tmp" "$X/cmd"
+    for _ in $(seq 1 "${3:-600}"); do [ -e "$X/done" ] && break; sleep 0.1; done
+    cat "$X/out" 2>/dev/null
+    [ -e "$X/done" ] || { echo "xtest: timed out" >&2; exit 1; }
+    ;;
+shot)
+    out=$(realpath "$2")
+    "$0" run "maim -u /work${out#$PROJECT}"
+    ;;
+stop)
+    : > "$X/stop"
+    ;;
+reload)
+    # rebuild the shell and restart it inside the running session
+    "$PROJECT/tools/tb" bash -c "/work/tools/build.sh native && make -s -C /work/src/shell OUT=/work/build/shell"
+    "$0" run "install -m755 /work/build/native/* \$R/usr/bin/; install -m755 /work/build/shell/*.exe \$R/usr/lib/wincraft/ && pkill -f wcshell.exe; sleep 3"
+    ;;
+*)
+    sed -n '2,14p' "$0"; exit 2 ;;
+esac

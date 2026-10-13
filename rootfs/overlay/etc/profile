@@ -1,0 +1,4 @@
+export PATH=/usr/local/bin:/usr/bin
+export LANG=C.UTF-8
+export PS1='\u@\h:\w\$ '
+umask 022

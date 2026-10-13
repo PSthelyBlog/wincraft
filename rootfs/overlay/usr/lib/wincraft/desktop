@@ -1,0 +1,29 @@
+#!/bin/sh
+# The user's Windows desktop: the window manager, then the WinCraft shell
+# (taskbar, Start menu, desktop icons). Every Windows program started from the
+# shell shares this session.
+
+export HOME=/home/user USER=user LOGNAME=user
+export PATH=/usr/bin
+export LANG=C.UTF-8
+export DISPLAY=${DISPLAY:-:0}
+export XDG_RUNTIME_DIR=/run/user/1000
+export WINEPREFIX=$HOME/.wine
+export WINEDEBUG=-all
+export WINCRAFT_TASKBAR=${WINCRAFT_TASKBAR:-44}
+# winemenubuilder only exports shortcuts to Linux desktops; nothing to export to.
+export WINEDLLOVERRIDES="winemenubuilder.exe=d"
+cd "$HOME" || exit 1
+
+# The window manager and the shell are restarted if they ever exit; the
+# session ends with the display.
+(while xrandr >/dev/null 2>&1; do wcwm; sleep 1; done) &
+
+rm -f "$XDG_RUNTIME_DIR/wincraft-ending"
+while :; do
+    # while the session is being ended for shutdown, leave the shell closed
+    [ -e "$XDG_RUNTIME_DIR/wincraft-ending" ] && { sleep 1; continue; }
+    wine /usr/lib/wincraft/wcshell.exe
+    xrandr >/dev/null 2>&1 || exit 1
+    sleep 1
+done

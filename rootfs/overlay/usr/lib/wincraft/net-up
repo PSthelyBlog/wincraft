@@ -1,0 +1,12 @@
+#!/bin/sh
+# Bring up every wired network interface with DHCP.
+# udhcpc stays in the background and renews (or keeps trying) on its own.
+for path in /sys/class/net/*; do
+    dev=${path##*/}
+    [ "$(cat "$path/type" 2>/dev/null)" = 1 ] || continue     # ethernet only
+    [ -d "$path/wireless" ] && continue
+    ip link set "$dev" up
+    udhcpc -i "$dev" -b -S -x "hostname:$(hostname)" \
+        -s /usr/lib/wincraft/udhcpc.script >/dev/null 2>&1 &
+done
+wait

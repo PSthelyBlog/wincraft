@@ -1,0 +1,19 @@
+REGEDIT4
+
+; WinCraft OS defaults applied to the Windows environment at build time.
+
+; Windows programs draw their own title bars and borders, the Windows way;
+; the WinCraft window manager (wcwm) adds none.
+[HKEY_CURRENT_USER\Software\Wine\X11 Driver]
+"Decorated"="N"
+
+; Smooth (ClearType) text.
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"FontSmoothing"="2"
+"FontSmoothingType"=dword:00000002
+"FontSmoothingGamma"=dword:00000578
+"FontSmoothingOrientation"=dword:00000001
+
+; The WinCraft shell provides the desktop background.
+[HKEY_CURRENT_USER\Control Panel\Colors]
+"Background"="11 21 48"

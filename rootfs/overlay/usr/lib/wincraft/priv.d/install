@@ -1,0 +1,70 @@
+#!/bin/sh
+# Install WinCraft OS to a disk. Runs as root, started by wcinit on behalf of
+# the installer window ("wcctl priv install <disk>").
+#
+#   usage: install <disk>        e.g. install sda   (a name from /sys/block)
+#
+# THE WHOLE DISK IS ERASED. Layout written (MBR, boots on BIOS and UEFI):
+#   1  FAT32  "WINCRAFT"       boot loader, kernel, system image
+#   2  ext4   "WINCRAFT_DATA"  everything the user installs or changes
+#
+# Progress goes to /run/wincraft/install.status, one line at a time; the last
+# line is "done" or "error: <reason>".
+PATH=/usr/bin
+status=/run/wincraft/install.status
+src=/live/medium
+mnt=/run/wincraft/target
+
+say()  { echo "$*" >> "$status"; }
+fail() { say "error: $*"; umount "$mnt" 2>/dev/null; exit 1; }
+
+: > "$status"
+chmod 644 "$status"
+
+name=$1
+case "$name" in ''|*[!a-z0-9]*) fail "invalid disk name" ;; esac
+disk=/dev/$name
+[ -b "$disk" ] && [ -d "/sys/block/$name" ] || fail "no such disk: $name"
+[ -e /run/wincraft/live ] || fail "the installer only runs from the installation medium"
+[ -f "$src/wincraft/system.sfs" ] || fail "installation medium not available (started with 'copy to RAM'?)"
+grep -q "^$disk" /proc/mounts && fail "$name is in use (it is the installation medium)"
+size=$(cat "/sys/block/$name/size")
+[ "$size" -ge 8388608 ] || fail "the disk is smaller than 4 GB"
+
+case "$name" in *[0-9]) p=p ;; *) p= ;; esac     # nvme0n1 -> nvme0n1p1
+boot=$disk${p}1
+data=$disk${p}2
+
+say "Partitioning $name"
+wipefs -a -q "$disk" >/dev/null 2>&1
+/usr/bin/sfdisk -q --wipe always --wipe-partitions always "$disk" <<PART || fail "could not partition the disk"
+label: dos
+size=1024MiB, type=ef, bootable
+type=83
+PART
+/usr/bin/blockdev --rereadpt "$disk" 2>/dev/null
+udevadm settle --timeout=10
+n=0; until [ -b "$boot" ] && [ -b "$data" ]; do n=$((n + 1)); [ $n -gt 50 ] && fail "partitions did not appear"; sleep 0.2; done
+
+say "Formatting"
+mkfs.fat -F 32 -n WINCRAFT "$boot" >/dev/null 2>&1 || fail "could not format the system partition"
+mkfs.ext4 -q -F -L WINCRAFT_DATA "$data" >/dev/null 2>&1 || fail "could not format the data partition"
+
+say "Copying the system"
+mkdir -p "$mnt"
+/usr/bin/mount -t vfat "$boot" "$mnt" || fail "could not mount the system partition"
+mkdir -p "$mnt/boot/limine" "$mnt/EFI/BOOT" "$mnt/wincraft"
+cp "$src/boot/vmlinuz" "$src/boot/initramfs.img" "$mnt/boot/" || fail "copy failed"
+cp "$src/wincraft/version" "$mnt/wincraft/" 2>/dev/null
+cp "$src/wincraft/system.sfs" "$mnt/wincraft/system.sfs" || fail "copy failed (system image)"
+
+say "Installing the boot loader"
+cp /usr/share/limine/limine-bios.sys "$mnt/boot/limine/" || fail "boot loader files missing"
+cp /usr/share/limine/BOOTX64.EFI /usr/share/limine/BOOTIA32.EFI "$mnt/EFI/BOOT/" || fail "boot loader files missing"
+cp /usr/share/wincraft/limine-installed.conf "$mnt/boot/limine/limine.conf" || fail "boot loader configuration missing"
+sync
+/usr/bin/umount "$mnt" || fail "could not unmount the system partition"
+limine bios-install "$disk" >/dev/null 2>&1 || fail "could not install the boot loader"
+sync
+
+say "done"

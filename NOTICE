@@ -1,0 +1,21 @@
+WinCraft OS
+Copyright (c) 2026 The WinCraft OS contributors
+
+The sources in this repository (init, window manager, shell, installer, build
+system and configuration) are licensed under the MIT License; see LICENSE.
+
+A built WinCraft OS image also contains third-party software under its own
+licenses, including the Linux kernel (GPL-2.0), Wine (LGPL-2.1-or-later),
+glibc (LGPL-2.1-or-later), BusyBox (GPL-2.0), the X.Org server and libraries
+(MIT/X11), Mesa (MIT), LLVM (Apache-2.0 with LLVM exceptions), systemd-udev
+(LGPL-2.1-or-later), GnuTLS (LGPL-2.1-or-later) and Limine (BSD-2-Clause).
+
+Their license texts ship in the image under /usr/share/licenses. Every build
+writes out/wincraft-<version>-components.txt, listing each component with its
+version, licence and upstream source; that file is published with each
+release. The kernel is built from the unmodified upstream source with the
+configuration in kernel/wincraft.config; the other components are unmodified
+Arch Linux packages.
+
+WinCraft OS is not affiliated with or endorsed by Microsoft. "Windows" is a
+trademark of Microsoft Corporation, used here only to describe compatibility.

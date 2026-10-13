@@ -1,0 +1,25 @@
+#!/bin/sh
+# WinCraft graphical session (runs as root, supervised by wcinit):
+# start the display server, then hand the screen to the user's Windows desktop.
+# When either side exits, tear the other down; wcinit starts a fresh session.
+export PATH=/usr/bin
+export DISPLAY=:0
+
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+/usr/lib/Xorg :0 vt1 -nolisten tcp -ac -noreset -logfile /run/log/Xorg.0.log &
+xpid=$!
+
+n=0
+until [ -S /tmp/.X11-unix/X0 ] && xrandr >/dev/null 2>&1; do
+    kill -0 "$xpid" 2>/dev/null || { echo "session: display server exited"; exit 1; }
+    n=$((n + 1))
+    [ "$n" -gt 300 ] && { echo "session: display server did not come up"; kill "$xpid"; exit 1; }
+    sleep 0.2
+done
+
+[ -s /run/wincraft/kbd ] && setxkbmap "$(cat /run/wincraft/kbd)"
+
+/usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups /usr/lib/wincraft/desktop
+
+kill "$xpid" 2>/dev/null
+wait

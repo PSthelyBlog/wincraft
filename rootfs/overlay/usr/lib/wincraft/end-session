@@ -1,0 +1,17 @@
+#!/bin/sh
+# End the Windows session, then power the machine off or restart it.
+# usage: end-session poweroff|reboot
+#
+# Started by the shell, but deliberately a native program: ending the session
+# closes every Windows program, the shell included, and something has to be
+# left to finish the job.
+flag=$XDG_RUNTIME_DIR/wincraft-ending
+: > "$flag"                       # tells the desktop not to restart the shell
+
+# Every program gets the standard Windows end-of-session request and may ask
+# to save its work. If the user cancels there, the session simply continues.
+if ! wine wineboot.exe --end-session; then
+    rm -f "$flag"
+    exit 0
+fi
+exec wcctl "$1"

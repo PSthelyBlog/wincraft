@@ -1,0 +1,33 @@
+# Arch Linux packages staged into the WinCraft root filesystem (dependencies
+# are resolved automatically, then pruned by rootfs/prune.sh).
+
+# -- base layout and C runtime
+filesystem
+glibc
+busybox
+tzdata
+ca-certificates
+
+# -- Windows compatibility layer and what it loads at run time
+wine
+gnutls
+alsa-lib
+alsa-utils
+libxcomposite
+libxinerama
+ttf-liberation
+
+# -- graphics stack
+xorg-server
+xf86-input-libinput
+xorg-xrandr
+mesa
+
+# -- device management (udev only; systemd itself is pruned)
+systemd
+
+# -- installer back end
+util-linux
+e2fsprogs
+dosfstools
+limine
