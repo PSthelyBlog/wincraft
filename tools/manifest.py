@@ -6,7 +6,7 @@ root filesystem (same path alone is not enough: /usr/bin/sh, for one, is a
 BusyBox link here, not the bash one). For each: name, version, licence and
 upstream URL - what is needed to credit it and to find the matching source.
 
-Usage: manifest.py <staging-root> <output-root> <kernel-version>
+Usage: manifest.py <staging-root> <output-root> <kernel-version> [<wine-patches-dir>]
 """
 import os
 import subprocess
@@ -31,9 +31,12 @@ def same_file(a, b):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
     stage, root, kernel = sys.argv[1].rstrip("/"), sys.argv[2].rstrip("/"), sys.argv[3]
+    patches = []
+    if len(sys.argv) == 5 and os.path.isdir(sys.argv[4]):
+        patches = sorted(name for name in os.listdir(sys.argv[4]) if name.endswith(".patch"))
 
     owner = {}
     for line in pacman(stage, "-Ql").splitlines():
@@ -67,6 +70,13 @@ def main():
     print("#   https://gitlab.archlinux.org/archlinux/packaging/packages/<name>")
     print("# and the packages themselves at https://archive.archlinux.org/packages/")
     print("#")
+    if patches:
+        print("# Wine is the exception: the modules touched by these patches (wine/patches in")
+        print("# the WinCraft source tree) are rebuilt from the upstream source of the same")
+        print("# release, https://dl.winehq.org/wine/source/")
+        for name in patches:
+            print(f"#   {name}")
+        print("#")
     print("# name\tversion\tlicence\tupstream")
     major = kernel.split(".")[0]
     print(f"linux\t{kernel}\tGPL-2.0-only\t"

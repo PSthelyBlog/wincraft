@@ -1,0 +1,37 @@
+userenv: Add a stub for DeriveAppContainerSidFromAppContainerName.
+
+Firefox 153 ESR and later delay-load this function when they set up the
+sandbox of a media helper process (the app container "fx.sb.cdm..."). Without
+the export the delay-load fails with exception 0xc06d007f and the whole
+browser goes down, for instance a few seconds after opening youtube.com.
+
+With a stub that reports E_NOTIMPL, like CreateAppContainerProfile next to it,
+Firefox logs that the helper could not be launched and carries on. Returning
+the real SID instead makes Firefox go further into the app container setup,
+where it fails one of its own checks, so the stub is deliberate.
+
+Status: not yet sent to WineHQ.
+---
+--- a/dlls/userenv/userenv.spec
++++ b/dlls/userenv/userenv.spec
+@@ -2,6 +2,7 @@
+ 
+ @ stdcall CreateAppContainerProfile(wstr wstr wstr ptr long ptr)
+ @ stdcall CreateEnvironmentBlock(ptr ptr long)
++@ stdcall DeriveAppContainerSidFromAppContainerName(wstr ptr)
+ @ stdcall DestroyEnvironmentBlock(ptr)
+ @ stdcall EnterCriticalPolicySection(long)
+ @ stdcall ExpandEnvironmentStringsForUserA(ptr str ptr long)
+--- a/dlls/userenv/userenv_main.c
++++ b/dlls/userenv/userenv_main.c
+@@ -696,3 +696,10 @@
+ 
+     return E_NOTIMPL;
+ }
++
++HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(const WCHAR *container_name, SID **container_sid)
++{
++    FIXME("(%s, %p): stub\n", debugstr_w(container_name), container_sid);
++
++    return E_NOTIMPL;
++}

@@ -64,6 +64,105 @@ step_native() {
     strip $B/native/*
 }
 
+# ----------------------------------------------------------------- wine
+# Wine itself comes from the Arch package. The patches in wine/patches are
+# applied to the upstream source of the same release, and only the modules
+# they touch are rebuilt (with the package's own build options) and laid over
+# the packaged files in $B/wine-overlay.
+#
+# That works for Windows-side modules, which is nearly all of Wine. A patch to
+# the server, to shared headers or to a module with a Unix-side part needs a
+# full Wine build; this step refuses it rather than build a mismatched half.
+step_wine() {
+    local out=$B/wine-overlay src=$B/wine-src bld=$B/wine-build
+    local patches=($W/wine/patches/*.patch)
+    [ -e "${patches[0]}" ] || { rm -rf $out $out.stamp; return 0; }
+    [ -d $S/usr ] || step_stage
+
+    local ver staged stamp
+    ver=$(cat $W/wine/VERSION)
+    staged=$(pacman --root $S --dbpath $S/var/lib/pacman -Q wine | cut -d' ' -f2)
+    if [ "${staged%-*}" != "${ver/-rc/rc}" ]; then
+        echo "wine: the staged package is $staged, but wine/VERSION pins $ver." >&2
+        echo "      Set wine/VERSION and wine/SHA256SUMS to the new release and check" >&2
+        echo "      that every patch in wine/patches still applies and is still needed." >&2
+        exit 1
+    fi
+    stamp=$(cat $W/wine/VERSION $W/wine/SHA256SUMS "${patches[@]}" | sha256sum | cut -d' ' -f1)
+    [ "$(cat $out.stamp 2>/dev/null)" = "$stamp" ] && [ -d $out ] && return 0
+
+    local tar=wine-$ver.tar.xz series=${ver%%.*}.x
+    case "$ver" in *.0|*.0.*|*.0-rc*) series=${ver%%.*}.0 ;; esac
+    mkdir -p $B/dl/wine
+    if [ ! -f $B/dl/wine/$tar ]; then
+        say "Fetching Wine $ver"
+        curl -fL -o $B/dl/wine/$tar https://dl.winehq.org/wine/source/$series/$tar
+    fi
+    grep -q " $tar\$" $W/wine/SHA256SUMS ||
+        { echo "wine: wine/SHA256SUMS has no entry for $tar" >&2; exit 1; }
+    (cd $B/dl/wine && grep " $tar\$" $W/wine/SHA256SUMS | sha256sum -c --quiet -)
+
+    say "Patching Wine $ver"
+    rm -rf $src $bld $out $out.stamp
+    mkdir -p $src $bld
+    tar -C $src --strip-components=1 -xf $B/dl/wine/$tar
+    local p
+    for p in "${patches[@]}"; do
+        patch -d $src -p1 -s --no-backup-if-mismatch < "$p" ||
+            { echo "wine: $(basename "$p") does not apply to Wine $ver" >&2; exit 1; }
+    done
+
+    # What to rebuild: the dlls/<name> and programs/<name> directories the
+    # patches touch (tests are not built).
+    local dirs bad
+    dirs=$(sed -n 's|^+++ b/||p' "${patches[@]}" | cut -f1 | awk -F/ '
+        ($1 == "dlls" || $1 == "programs") && NF >= 3 { if ($3 != "tests") print $1 "/" $2; next }
+        { print "!" $0 }' | sort -u)
+    bad=$(echo "$dirs" | sed -n 's/^!//p')
+    if [ -n "$bad" ]; then
+        echo "wine: these patched files are outside a single module, which needs a full Wine build:" >&2
+        echo "$bad" | sed 's/^/        /' >&2
+        exit 1
+    fi
+
+    local d module arch targets=()
+    for d in $dirs; do
+        module=$(sed -n 's/^MODULE *= *//p' $src/$d/Makefile.in)
+        [ -n "$module" ] || { echo "wine: $d does not build a module" >&2; exit 1; }
+        if grep -q '^UNIXLIB' $src/$d/Makefile.in; then
+            echo "wine: $module has a Unix-side part, which needs a full Wine build" >&2
+            exit 1
+        fi
+        for arch in x86_64 i386; do
+            if [ -e $S/usr/lib/wine/$arch-windows/$module ]; then
+                targets+=($d/$arch-windows/$module)
+            fi
+        done
+    done
+    [ ${#targets[@]} -gt 0 ] || { echo "wine: the patches touch no module of the staged package" >&2; exit 1; }
+
+    say "Building $(printf '%s\n' "${targets[@]##*/}" | sort -u | xargs) for Wine $ver"
+    # The options the Arch package is built with, so that the rebuilt modules
+    # match the ones they replace.
+    (cd $bld && CROSSCFLAGS="-O2 -pipe -g" CROSSLDFLAGS="-Wl,-O1" $src/configure --prefix=/usr \
+        --libdir=/usr/lib --disable-tests --enable-archs=x86_64,i386 --enable-build-id &&
+        make -j"$(nproc)" "${targets[@]}") > $B/wine-build.log 2>&1 ||
+        { tail -30 $B/wine-build.log; exit 1; }
+
+    local t strip
+    for t in "${targets[@]}"; do
+        arch=${t%-windows/*}; arch=${arch##*/}
+        case $arch in
+            i386) strip=i686-w64-mingw32-strip ;;
+            *)    strip=x86_64-w64-mingw32-strip ;;
+        esac
+        mkdir -p $out/usr/lib/wine/$arch-windows
+        $strip --strip-unneeded -o $out/usr/lib/wine/$arch-windows/${t##*/} $bld/$t
+        chmod --reference=$S/usr/lib/wine/$arch-windows/${t##*/} $out/usr/lib/wine/$arch-windows/${t##*/}
+    done
+    echo "$stamp" > $out.stamp
+}
+
 # --------------------------------------------------------------- rootfs
 in_root() {    # run a command chrooted into $R as the desktop user
     chroot --userspec=1000:1000 $R /usr/bin/env -i \
@@ -118,6 +217,12 @@ step_rootfs() {
         install -m755 $B/shell/*.exe $R/usr/lib/wincraft/
     fi
     [ -d $W/assets ] && rsync -a $W/assets/ $R/usr/share/wincraft/
+
+    step_wine
+    if [ -d $B/wine-overlay ]; then
+        say "Applying patched Wine modules"
+        rsync -a $B/wine-overlay/ $R/
+    fi
 
     say "Generating caches"
     ldconfig -r $R
@@ -182,12 +287,12 @@ step_iso() {
 # What the image is made of, for credit and for finding the matching sources.
 step_manifest() {
     mkdir -p $W/out
-    python3 $W/tools/manifest.py $S $R "$KVER" > $W/out/wincraft-$VERSION-components.txt
+    python3 $W/tools/manifest.py $S $R "$KVER" $W/wine/patches > $W/out/wincraft-$VERSION-components.txt
 }
 
 for step in "$@"; do
     case "$step" in
-        kernel|stage|native|rootfs|iso|manifest) step_$step ;;
+        kernel|stage|native|wine|rootfs|iso|manifest) step_$step ;;
         all) step_kernel; step_stage; step_rootfs; step_iso ;;
         *) echo "unknown step: $step" >&2; exit 2 ;;
     esac

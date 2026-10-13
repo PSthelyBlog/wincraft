@@ -5,6 +5,7 @@
 #   ./wc toolbox          create the build toolbox (rootless Arch Linux root)
 #   ./wc kernel           configure and compile the kernel
 #   ./wc stage            download the packages the root filesystem is cut from
+#   ./wc wine             rebuild the Wine modules changed by wine/patches
 #   ./wc rootfs           assemble the root filesystem
 #   ./wc iso              initramfs + system image + bootable ISO  -> out/
 #   ./wc run [options]    boot the ISO in QEMU   (see tools/vm --help)
@@ -74,7 +75,7 @@ cmd=${1:-help}
 case "$cmd" in
     build)    mkdir -p build; toolbox; tools/tb /work/tools/build.sh all ;;
     toolbox)  mkdir -p build; toolbox ;;
-    kernel|stage|rootfs|iso)
+    kernel|stage|wine|rootfs|iso)
               toolbox; tools/tb /work/tools/build.sh "$cmd" ;;
     run)      exec tools/vm "$@" ;;
     desktop)  exec tools/xtest start "$@" ;;
@@ -85,5 +86,5 @@ case "$cmd" in
         [ -d build ] && unshare --user --map-root-user --map-auto -- rm -rf build
         rm -rf out
         ;;
-    *)        sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac

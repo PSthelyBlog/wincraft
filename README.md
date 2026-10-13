@@ -45,7 +45,7 @@ projects that already do the hard parts, and writes everything in between:
 | Layer | What | Origin |
 |---|---|---|
 | Kernel | Linux 6.18 LTS, one monolithic image, no modules, no firmware blobs. Built with NT synchronisation primitives (`ntsync`) and with PE executables registered as a native binary format | built from source, config in `kernel/` |
-| Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs) | binary package |
+| Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs) | binary package, plus the fixes in `wine/patches` |
 | Display | X.Org server, Mesa (software OpenGL) | binary packages |
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
 | **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
@@ -159,10 +159,25 @@ Host requirements: bash, curl, tar, zstd, util-linux (`unshare`),
 of disk and, the first time, a few gigabytes of downloads. The kernel takes
 about four minutes on 16 cores; everything else about five.
 
-Individual steps: `./wc kernel | stage | rootfs | iso`. `./wc desktop` runs
+Individual steps: `./wc kernel | stage | wine | rootfs | iso`. `./wc desktop` runs
 just the desktop session natively on a virtual display — the fast way to work
 on the shell or the window manager (see `tools/xtest`). `./wc clean` removes
 all build output.
+
+### Patching Wine
+
+Wine is taken from the Arch package, but fixes WinCraft needs before a Wine
+release has them go in `wine/patches`. The build applies them to the upstream
+source of the same release (`wine/VERSION`, checked against
+`wine/SHA256SUMS`), rebuilds only the modules they touch, about half a minute,
+and lays those over the packaged files.
+
+- Only Windows-side modules can be patched this way. A patch to the Wine
+  server, to shared headers or to a module with a Unix-side part is refused.
+- The build stops when Arch moves to a newer Wine than `wine/VERSION`: bump
+  the version and checksum, and drop the patches the new release already has.
+- Each patch says why it exists and whether WineHQ has it. They are meant to
+  go upstream, not to stay here.
 
 ## Layout
 
@@ -178,6 +193,7 @@ src/tools/wcctl.c      talk to wcinit (power off, privileged helpers)
 rootfs/packages.txt    packages the image is cut from
 rootfs/overlay/        WinCraft's own system files
 rootfs/wincraft.reg    registry defaults for the Windows environment
+wine/                  pinned Wine release and WinCraft's patches to it
 tools/                 toolbox entry, image assembler, build steps, VM runner,
                        test harnesses (xtest, qmp.py), component manifest
 ```
@@ -188,9 +204,10 @@ upstream source.
 
 ## License
 
-WinCraft's own code is MIT licensed (see `LICENSE`). A built image also
-contains Linux (GPL-2.0), Wine (LGPL-2.1+) and other components under their
-own licenses (see `NOTICE`).
+WinCraft's own code is MIT licensed (see `LICENSE`); the patches in
+`wine/patches` are changes to Wine and carry Wine's license, LGPL-2.1+. A
+built image also contains Linux (GPL-2.0), Wine (LGPL-2.1+) and other
+components under their own licenses (see `NOTICE`).
 
 WinCraft OS is not affiliated with or endorsed by Microsoft. "Windows" is a
 trademark of Microsoft Corporation, used here only to describe compatibility.

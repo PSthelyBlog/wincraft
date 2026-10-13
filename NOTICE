@@ -3,6 +3,8 @@ Copyright (c) 2026 The WinCraft OS contributors
 
 The sources in this repository (init, window manager, shell, installer, build
 system and configuration) are licensed under the MIT License; see LICENSE.
+The files in wine/patches are modifications of Wine and are licensed, like
+Wine, under the GNU Lesser General Public License, version 2.1 or later.
 
 A built WinCraft OS image also contains third-party software under its own
 licenses, including the Linux kernel (GPL-2.0), Wine (LGPL-2.1-or-later),
@@ -14,8 +16,9 @@ Their license texts ship in the image under /usr/share/licenses. Every build
 writes out/wincraft-<version>-components.txt, listing each component with its
 version, licence and upstream source; that file is published with each
 release. The kernel is built from the unmodified upstream source with the
-configuration in kernel/wincraft.config; the other components are unmodified
-Arch Linux packages.
+configuration in kernel/wincraft.config. Wine is the Arch Linux package with
+the modules touched by wine/patches rebuilt from the upstream source of the
+same release. The other components are unmodified Arch Linux packages.
 
 WinCraft OS is not affiliated with or endorsed by Microsoft. "Windows" is a
 trademark of Microsoft Corporation, used here only to describe compatibility.
