@@ -1,0 +1,47 @@
+server: Don't count an exiting thread of the desktop owner as still running.
+
+The server closes a desktop one second after the process that owns the
+desktop window (explorer.exe /desktop) is its only user left. It decides by
+comparing the number of threads using the desktop with the owner's running
+threads. When one of the owner's own threads exits, kill_thread() releases
+the thread's desktop before remove_process_thread() decrements
+running_threads, so the exiting thread is still counted and one thread of
+another process on the desktop looks like none.
+
+On WinCraft the shell (wcshell.exe) has a single thread. About six seconds
+after the last File Explorer window was closed, a worker thread of the
+desktop process exited, the server posted WM_CLOSE to the desktop window
+and explorer.exe /desktop quit while the shell was still using the desktop.
+A wineserver built with logging recorded "users=5, owner running_threads=5"
+at that moment. With this change the desktop stays, and it still closes
+once the owner is really alone on it.
+
+Status: not for WineHQ as it stands. This patch was written with an LLM,
+and WineHQ does not accept LLM-generated code. As of 2026-10-14 no WineHQ
+bug or merge request covers this case; bug 59393 reports the same check
+closing explorer.exe for another reason.
+---
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -417,12 +417,20 @@
+ static void remove_desktop_user( struct desktop *desktop, struct thread *thread )
+ {
+     struct process *process;
++    int owner_threads = 0;
+ 
+     assert( desktop->users > 0 );
+     desktop->users--;
+ 
++    if ((process = get_top_window_owner( desktop )))
++    {
++        owner_threads = process->running_threads;
++        /* an exiting thread of the owner is still counted as running at this point */
++        if (thread->process == process && thread->state == TERMINATED) owner_threads--;
++    }
++
+     /* if we have one remaining user, it has to be the manager of the desktop window */
+-    if ((process = get_top_window_owner( desktop )) && desktop->users == process->running_threads && !desktop->close_timeout)
++    if (process && desktop->users == owner_threads && !desktop->close_timeout)
+         desktop->close_timeout = add_timeout_user( -TICKS_PER_SEC, close_desktop_timeout, desktop );
+ }
+ 
