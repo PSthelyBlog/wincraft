@@ -71,9 +71,9 @@ def main():
     print("# and the packages themselves at https://archive.archlinux.org/packages/")
     print("#")
     if patches:
-        print("# Wine is the exception: the modules touched by these patches (wine/patches in")
-        print("# the WinCraft source tree) are rebuilt from the upstream source of the same")
-        print("# release, https://dl.winehq.org/wine/source/")
+        print("# Wine is the exception: the modules and the server touched by these patches")
+        print("# (wine/patches in the WinCraft source tree) are rebuilt from the upstream")
+        print("# source of the same release, https://dl.winehq.org/wine/source/")
         for name in patches:
             print(f"#   {name}")
         print("#")

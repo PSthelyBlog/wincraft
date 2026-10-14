@@ -17,8 +17,9 @@ writes out/wincraft-<version>-components.txt, listing each component with its
 version, licence and upstream source; that file is published with each
 release. The kernel is built from the unmodified upstream source with the
 configuration in kernel/wincraft.config. Wine is the Arch Linux package with
-the modules touched by wine/patches rebuilt from the upstream source of the
-same release. The other components are unmodified Arch Linux packages.
+the modules and the server touched by wine/patches rebuilt from the upstream
+source of the same release. The other components are unmodified Arch Linux
+packages.
 
 WinCraft OS is not affiliated with or endorsed by Microsoft. "Windows" is a
 trademark of Microsoft Corporation, used here only to describe compatibility.

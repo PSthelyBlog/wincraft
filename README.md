@@ -172,18 +172,19 @@ all build output.
 Wine is taken from the Arch package, but fixes WinCraft needs before a Wine
 release has them go in `wine/patches`. The build applies them to the upstream
 source of the same release (`wine/VERSION`, checked against
-`wine/SHA256SUMS`), rebuilds only the modules they touch, about half a minute,
-and lays those over the packaged files.
+`wine/SHA256SUMS`), rebuilds only what they touch, about half a minute, and
+lays that over the packaged files.
 
-- Only Windows-side modules can be patched this way. A patch to the Wine
-  server, to shared headers or to a module with a Unix-side part is refused.
+- Windows-side modules and the Wine server can be patched this way. A patch
+  to the server's protocol, to shared headers or to a module with a Unix-side
+  part is refused: those have to match the rest of the package.
 - The build stops when Arch moves to a newer Wine than `wine/VERSION`: bump
   the version and checksum, and drop the patches the new release already has.
 - Each patch says why it exists and where WineHQ stands on the same problem,
   and stays only until a Wine release makes it unnecessary.
 - WineHQ does not accept LLM-generated code. A patch written with an LLM, as
-  the current one was, cannot be sent there; it points to the matching WineHQ
-  bug or merge request instead.
+  the current ones were, cannot be sent there; it points to the matching
+  WineHQ bug or merge request instead, when there is one.
 
 ## Layout
 

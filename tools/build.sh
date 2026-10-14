@@ -66,13 +66,14 @@ step_native() {
 
 # ----------------------------------------------------------------- wine
 # Wine itself comes from the Arch package. The patches in wine/patches are
-# applied to the upstream source of the same release, and only the modules
-# they touch are rebuilt (with the package's own build options) and laid over
-# the packaged files in $B/wine-overlay.
+# applied to the upstream source of the same release, and only what they touch
+# is rebuilt (with the package's own build options) and laid over the packaged
+# files in $B/wine-overlay: Windows-side modules, which are nearly all of Wine,
+# and the Wine server.
 #
-# That works for Windows-side modules, which is nearly all of Wine. A patch to
-# the server, to shared headers or to a module with a Unix-side part needs a
-# full Wine build; this step refuses it rather than build a mismatched half.
+# A patch to the server's protocol, to shared headers or to a module with a
+# Unix-side part needs a full Wine build, because those have to match the rest
+# of the package; this step refuses it rather than build a mismatched half.
 step_wine() {
     local out=$B/wine-overlay src=$B/wine-src bld=$B/wine-build
     local patches=($W/wine/patches/*.patch)
@@ -88,7 +89,8 @@ step_wine() {
         echo "      that every patch in wine/patches still applies and is still needed." >&2
         exit 1
     fi
-    stamp=$(cat $W/wine/VERSION $W/wine/SHA256SUMS "${patches[@]}" | sha256sum | cut -d' ' -f1)
+    stamp=$({ cat $W/wine/VERSION $W/wine/SHA256SUMS "${patches[@]}"; declare -f step_wine; } |
+            sha256sum | cut -d' ' -f1)
     [ "$(cat $out.stamp 2>/dev/null)" = "$stamp" ] && [ -d $out ] && return 0
 
     local tar=wine-$ver.tar.xz series=${ver%%.*}.x
@@ -113,20 +115,26 @@ step_wine() {
     done
 
     # What to rebuild: the dlls/<name> and programs/<name> directories the
-    # patches touch (tests are not built).
+    # patches touch (tests are not built), and the server. The server's
+    # protocol is generated into files shared with the rest of Wine.
     local dirs bad
     dirs=$(sed -n 's|^+++ b/||p' "${patches[@]}" | cut -f1 | awk -F/ '
         ($1 == "dlls" || $1 == "programs") && NF >= 3 { if ($3 != "tests") print $1 "/" $2; next }
+        $1 == "server" && NF == 2 && $2 !~ /^(protocol\.def|request_handlers\.h|request_trace\.h)$/ { print "server"; next }
         { print "!" $0 }' | sort -u)
     bad=$(echo "$dirs" | sed -n 's/^!//p')
     if [ -n "$bad" ]; then
-        echo "wine: these patched files are outside a single module, which needs a full Wine build:" >&2
+        echo "wine: these patched files need a full Wine build:" >&2
         echo "$bad" | sed 's/^/        /' >&2
         exit 1
     fi
 
     local d module arch targets=()
     for d in $dirs; do
+        if [ $d = server ]; then
+            targets+=(server/wineserver)
+            continue
+        fi
         module=$(sed -n 's/^MODULE *= *//p' $src/$d/Makefile.in)
         [ -n "$module" ] || { echo "wine: $d does not build a module" >&2; exit 1; }
         if grep -q '^UNIXLIB' $src/$d/Makefile.in; then
@@ -142,15 +150,30 @@ step_wine() {
     [ ${#targets[@]} -gt 0 ] || { echo "wine: the patches touch no module of the staged package" >&2; exit 1; }
 
     say "Building $(printf '%s\n' "${targets[@]##*/}" | sort -u | xargs) for Wine $ver"
-    # The options the Arch package is built with, so that the rebuilt modules
-    # match the ones they replace.
-    (cd $bld && CROSSCFLAGS="-O2 -pipe -g" CROSSLDFLAGS="-Wl,-O1" $src/configure --prefix=/usr \
+    # The options the Arch package is built with, so that the rebuilt files
+    # match the ones they replace: its configure options and cross-compiler
+    # flags, and makepkg's flags for the host side (the server).
+    local cflags ldflags
+    cflags=$(bash -c '. /etc/makepkg.conf && printf %s "$CFLAGS"')
+    ldflags=$(bash -c '. /etc/makepkg.conf && printf %s "$LDFLAGS"')
+    (cd $bld && CFLAGS="$cflags" LDFLAGS="$ldflags" CROSSCFLAGS="-O2 -pipe -g" CROSSLDFLAGS="-Wl,-O1" \
+        $src/configure --prefix=/usr \
         --libdir=/usr/lib --disable-tests --enable-archs=x86_64,i386 --enable-build-id &&
         make -j"$(nproc)" "${targets[@]}") > $B/wine-build.log 2>&1 ||
         { tail -30 $B/wine-build.log; exit 1; }
 
     local t strip
     for t in "${targets[@]}"; do
+        if [ $t = server/wineserver ]; then
+            mkdir -p $out/usr/bin
+            strip --strip-all -o $out/usr/bin/wineserver $bld/$t
+            chmod --reference=$S/usr/bin/wineserver $out/usr/bin/wineserver
+            if grep -aq /dev/ntsync $S/usr/bin/wineserver && ! grep -aq /dev/ntsync $out/usr/bin/wineserver; then
+                echo "wine: the rebuilt wineserver lacks ntsync support (no linux/ntsync.h in the toolbox?)" >&2
+                exit 1
+            fi
+            continue
+        fi
         arch=${t%-windows/*}; arch=${arch##*/}
         case $arch in
             i386) strip=i686-w64-mingw32-strip ;;
