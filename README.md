@@ -10,18 +10,18 @@ Start menu, and there is nothing else on the disk.
 - runs live from the ISO, or installs to disk in under a minute
 - 64-bit and 32-bit Windows programs
 
-**Status: 0.2, a working preview.** Read [What it is not](#what-it-is-not)
+**Status: 0.3, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
 
 ![The WinCraft desktop: Start menu, Notepad and Minesweeper](docs/screenshot.png)
 
 ## Download
 
-Get `wincraft-0.2-x86_64.iso` from the [releases page](../../releases) and
+Get `wincraft-0.3-x86_64.iso` from the [releases page](../../releases) and
 check it against the `.sha256` file published next to it:
 
 ```sh
-sha256sum -c wincraft-0.2-x86_64.iso.sha256
+sha256sum -c wincraft-0.3-x86_64.iso.sha256
 ```
 
 Then boot it in a virtual machine. This is the configuration it was tested
@@ -30,7 +30,7 @@ with (4 GB of RAM, 4 CPUs):
 ```sh
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -device VGA -device qemu-xhci -device usb-tablet -device usb-kbd \
-    -nic user,model=virtio-net-pci -cdrom wincraft-0.2-x86_64.iso
+    -nic user,model=virtio-net-pci -cdrom wincraft-0.3-x86_64.iso
 ```
 
 Guest drivers for VirtualBox, VMware and Hyper-V are built into the kernel,
@@ -114,7 +114,7 @@ Be clear-eyed about these before you depend on it:
 After [building](#build-it), the same ISO is in `out/`:
 
 ```sh
-./wc run                 # boots out/wincraft-0.2-x86_64.iso in a QEMU window
+./wc run                 # boots out/wincraft-0.3-x86_64.iso in a QEMU window
 ./wc run --uefi          # same, UEFI firmware
 ./wc run --disk build/vm/disk.qcow2:20G     # with a blank disk to install to
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
@@ -125,7 +125,7 @@ the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
 
 To put it on a USB stick, write the ISO to the whole device
-(`dd if=out/wincraft-0.2-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
+(`dd if=out/wincraft-0.3-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
 
 ### Boot options
 

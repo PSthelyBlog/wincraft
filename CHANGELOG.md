@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3 — 2026-10-15
+
+Fixes found while using 0.2 from day to day.
+
+- Firefox no longer starts "Not Responding" at random. When Firefox asks
+  Windows which security restrictions apply to it, Wine reported success
+  without filling in the answer, so Firefox read leftover memory. When that
+  said "locked down", it stopped reading window messages for good. This
+  happened in about half of all starts.
+- The notification area no longer disappears a few seconds after the last
+  File Explorer window is closed. Wine's server took the desktop for
+  abandoned and closed Wine's desktop process while the shell was still on it.
+- `wine/patches` can carry fixes to the Wine server too, not only to
+  Windows-side modules.
+
+Tested with Firefox 158: it answered on 10 of 10 fresh starts, where it hung
+on 3 of 5 before.
+
 ## 0.2 — 2026-10-13
 
 Fixes found while running Firefox on 0.1.
