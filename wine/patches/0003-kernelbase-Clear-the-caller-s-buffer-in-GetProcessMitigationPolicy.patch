@@ -1,0 +1,37 @@
+kernelbase: Clear the caller's buffer in GetProcessMitigationPolicy.
+
+GetProcessMitigationPolicy is a stub that returns TRUE and leaves the
+caller's buffer as it was, so a caller that trusts the result reads
+whatever was left on its stack.
+
+Firefox does this when it starts. mozglue's IsWin32kLockedDown() asks for
+ProcessSystemCallDisablePolicy and keeps DisallowWin32kSystemCalls for the
+rest of the process's life. When the leftover bit is set, the main process
+believes that win32k system calls are locked down: its app shell creates
+no message window and does not observe the main thread's events, so the
+main thread never reads Windows messages again and the browser window is
+"Not Responding" from the start. Whether it happens depends on the stack,
+so it comes and goes from one start to the next. In a hung Firefox 158 the
+cached flag was set in the main process and clear in its child processes.
+
+Wine enforces none of these policies, so report every flag as cleared.
+
+Status: not for WineHQ as it stands. This patch was written with an LLM,
+and WineHQ does not accept LLM-generated code. WineHQ bug 59529, reported
+in March 2026, describes the same stub breaking an embedded Chromium
+browser (CefSharp): https://bugs.winehq.org/show_bug.cgi?id=59529
+---
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -933,7 +933,10 @@
+ BOOL WINAPI /* DECLSPEC_HOTPATCH */ GetProcessMitigationPolicy( HANDLE process, PROCESS_MITIGATION_POLICY policy,
+                                                           void *buffer, SIZE_T length )
+ {
+-    FIXME( "(%p, %u, %p, %Iu): stub\n", process, policy, buffer, length );
++    FIXME( "(%p, %u, %p, %Iu): semi-stub\n", process, policy, buffer, length );
++
++    /* No mitigation policy is enforced, so report every flag as cleared. */
++    if (buffer) memset( buffer, 0, length );
+     return TRUE;
+ }
+ 
