@@ -1363,6 +1363,20 @@ static BOOL valid_dll_name(const char *s)
     return TRUE;
 }
 
+/* A program's file name, which becomes a registry key name: anything Windows
+ * allows in a file name (notepad++.exe, My Game (x86).exe), but no path. */
+static BOOL valid_program_name(const char *s)
+{
+    size_t n = strlen(s);
+
+    if (!n || n > 128)
+        return FALSE;
+    for (; *s; s++)
+        if ((unsigned char)*s < 0x20 || strchr("\\/:*?\"<>|", *s))
+            return FALSE;
+    return TRUE;
+}
+
 static void set_dll_override(sb_t *b, const json *args, approve_fn approve, void *ctx,
                              const tool_def *t, char **label)
 {
@@ -1388,7 +1402,7 @@ static void set_dll_override(sb_t *b, const json *args, approve_fn approve, void
     for (i = 0; i < ARRAYSIZE(modes); i++)
         if (!strcmp(mode, modes[i].mode))
             words = modes[i].words;
-    if (!valid_dll_name(dllname) || !words || (*prog && !valid_dll_name(prog))) {
+    if (!valid_dll_name(dllname) || !words || (*prog && !valid_program_name(prog))) {
         sb_add(b, "Invalid request: dll must be a DLL name, mode one of native, builtin, "
                   "native,builtin, builtin,native, disabled, default; program an .exe name.");
         *label = utf8_dup("A library change was refused (invalid request)");
@@ -1403,9 +1417,12 @@ static void set_dll_override(sb_t *b, const json *args, approve_fn approve, void
         *label = utf8_dup("A library change was not allowed");
         return;
     }
-    if (*prog)
-        _snwprintf(path, ARRAYSIZE(path), L"Software\\Wine\\AppDefaults\\%S\\DllOverrides", prog);
-    else
+    if (*prog) {
+        WCHAR *wprog = w_from_utf8(prog);   /* %S would read it in the ANSI code page */
+
+        _snwprintf(path, ARRAYSIZE(path), L"Software\\Wine\\AppDefaults\\%s\\DllOverrides", wprog);
+        free(wprog);
+    } else
         _snwprintf(path, ARRAYSIZE(path), L"Software\\Wine\\DllOverrides");
     path[ARRAYSIZE(path) - 1] = 0;
     wdll = w_from_utf8(dllname);
