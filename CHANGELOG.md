@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4 — 2026-10-16
+
+- **WinCraft Assistant.** A chat about WinCraft OS and this computer, with
+  an AI model from a provider you choose: Anthropic, OpenAI, OpenRouter, or a
+  model server on your network such as Ollama. It knows WinCraft from the
+  documentation built into this version and looks things up on the computer
+  as it goes: running and installed programs, the system logs, the network,
+  crash reports. Ending a program, changing a Wine library override or a
+  registry setting, and downloading an installer wait for your permission.
+  Open *WinCraft Assistant* on the desktop to set it up.
+- **The clipboard is shared with QEMU.** Text copied on the host pastes into
+  Windows programs in the virtual machine, and back. `./wc run` does it; the
+  README has the options for your own QEMU command.
+- `tools/vm --iso FILE` boots an ISO other than the one in `out/`.
+
+Tested with Claude Sonnet 5.5 through Anthropic's API, and against a scripted
+server for both API formats.
+
 ## 0.3 — 2026-10-15
 
 Fixes found while using 0.2 from day to day.
