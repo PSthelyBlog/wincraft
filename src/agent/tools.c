@@ -18,7 +18,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
-#include <urlmon.h>
+#include <winhttp.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1592,13 +1592,147 @@ static void end_program(sb_t *b, const json *args, approve_fn approve, void *ctx
     free(name);
 }
 
+/* Fetch an https address into a file. The assistant names itself instead of
+ * posing as a browser, so download sites send the file rather than a page that
+ * forwards a browser to it. WinHTTP follows redirects, but not from https to
+ * plain http. */
+static BOOL download_file(const WCHAR *url, const WCHAR *path, ULONGLONG *size, char *err, size_t errsize)
+{
+    URL_COMPONENTS uc;
+    WCHAR host[256];
+    HINTERNET ses = NULL, con = NULL, req = NULL;
+    HANDLE f = INVALID_HANDLE_VALUE;
+    DWORD status = 0, len = sizeof(status), got, put;
+    BOOL ok = FALSE;
+    static char chunk[65536];
+
+    *size = 0;
+    ZeroMemory(&uc, sizeof(uc));
+    uc.dwStructSize = sizeof(uc);
+    uc.dwHostNameLength = uc.dwUrlPathLength = (DWORD)-1;   /* point into url: the path keeps its ?query */
+    if (!WinHttpCrackUrl(url, 0, 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS ||
+        uc.dwHostNameLength >= ARRAYSIZE(host)) {
+        snprintf(err, errsize, "the address is not a valid https address");
+        return FALSE;
+    }
+    lstrcpynW(host, uc.lpszHostName, uc.dwHostNameLength + 1);
+    ses = WinHttpOpen(L"WinCraftAssistant/" WC_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (ses)
+        WinHttpSetTimeouts(ses, 15000, 15000, 60000, 60000);
+    if (!ses || !(con = WinHttpConnect(ses, host, uc.nPort, 0)) ||
+        !(req = WinHttpOpenRequest(con, L"GET", uc.lpszUrlPath, NULL, WINHTTP_NO_REFERER,
+                                   WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)) ||
+        !WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(req, NULL)) {
+        DWORD e = GetLastError();
+
+        switch (e) {
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED: snprintf(err, errsize, "the site's address could not be found"); break;
+        case ERROR_WINHTTP_CANNOT_CONNECT:    snprintf(err, errsize, "could not connect to the site"); break;
+        case ERROR_WINHTTP_TIMEOUT:           snprintf(err, errsize, "the site took too long to answer"); break;
+        case ERROR_WINHTTP_REDIRECT_FAILED:   /* it will not follow https to plain http */
+            snprintf(err, errsize, "the site sent it on to an address that is not https, which is not downloaded");
+            break;
+        case ERROR_WINHTTP_SECURE_FAILURE:
+            snprintf(err, errsize, "the secure connection failed (certificate problem, or the clock is wrong)");
+            break;
+        default: snprintf(err, errsize, "the connection failed (error %lu)", (unsigned long)e); break;
+        }
+        goto out;
+    }
+    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status, &len, WINHTTP_NO_HEADER_INDEX);
+    if (status != 200) {
+        snprintf(err, errsize, "the site answered with HTTP status %lu", (unsigned long)status);
+        goto out;
+    }
+    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        snprintf(err, errsize, "the file could not be created in Downloads");
+        goto out;
+    }
+    for (;;) {
+        if (llm_cancelled()) {
+            snprintf(err, errsize, "stopped by the person");
+            goto out;
+        }
+        if (!WinHttpReadData(req, chunk, sizeof(chunk), &got)) {
+            snprintf(err, errsize, "the connection broke off after %llu bytes", *size);
+            goto out;
+        }
+        if (!got)
+            break;
+        if (!WriteFile(f, chunk, got, &put, NULL) || put != got) {
+            snprintf(err, errsize, "the file could not be written (is the disk full?)");
+            goto out;
+        }
+        *size += got;
+    }
+    ok = TRUE;
+out:
+    if (f != INVALID_HANDLE_VALUE) {
+        CloseHandle(f);
+        if (!ok)
+            DeleteFileW(path);
+    }
+    if (req)
+        WinHttpCloseHandle(req);
+    if (con)
+        WinHttpCloseHandle(con);
+    if (ses)
+        WinHttpCloseHandle(ses);
+    return ok;
+}
+
+/* Whether a file is a Windows program (.exe) or a Windows Installer package
+ * (.msi). If not, *what says what it looks like instead. */
+static BOOL runnable_file(const WCHAR *path, char *what, size_t size)
+{
+    char head[4096], *t, *e;
+    DWORD got = 0;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (f == INVALID_HANDLE_VALUE) {
+        snprintf(what, size, "a file that cannot be read");
+        return FALSE;
+    }
+    ReadFile(f, head, sizeof(head) - 1, &got, NULL);
+    CloseHandle(f);
+    head[got] = 0;
+    if (got >= 2 && head[0] == 'M' && head[1] == 'Z')
+        return TRUE;
+    if (got >= 8 && !memcmp(head, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", 8))
+        return TRUE;
+    if (got >= 4 && !memcmp(head, "PK\3\4", 4)) {
+        snprintf(what, size, "a ZIP archive");
+        return FALSE;
+    }
+    if (StrStrIA(head, "<html") || StrStrIA(head, "<!doctype html")) {
+        if ((t = StrStrIA(head, "<title>")) && (e = StrStrIA(t += 7, "</title>")) && e - t < 120) {
+            char *p;
+
+            *e = 0;
+            for (p = t; *p; p++)
+                if ((unsigned char)*p < ' ' || *p == '"')
+                    *p = ' ';
+            snprintf(what, size, "a web page titled \"%s\"", trim(t));
+        } else {
+            snprintf(what, size, "a web page");
+        }
+        return FALSE;
+    }
+    snprintf(what, size, "a file that is not a Windows program");
+    return FALSE;
+}
+
 static void download_and_run(sb_t *b, const json *args, approve_fn approve, void *ctx,
                              const tool_def *t, char **label)
 {
     const char *url = arg_str(args, "url");
     WCHAR *wurl, file[MAX_PATH], *dl = NULL, path[MAX_PATH], *slash, *q;
-    char detail[1200], *upath;
-    HRESULT hr;
+    char detail[1200], *upath, err[200], what[200], bytes[32];
+    ULONGLONG got;
 
     if (_strnicmp(url, "https://", 8) || strlen(url) > 1000 || strpbrk(url, " \"\r\n")) {
         sb_add(b, "Refused: only https:// addresses can be downloaded.");
@@ -1632,17 +1766,28 @@ static void download_and_run(sb_t *b, const json *args, approve_fn approve, void
         *label = utf8_dup("A download was not allowed");
         goto out;
     }
-    hr = URLDownloadToFileW(NULL, wurl, path, 0, NULL);
-    if (FAILED(hr)) {
-        sb_addf(b, "The download failed (0x%08lx).", (unsigned long)hr);
+    if (!download_file(wurl, path, &got, err, sizeof(err))) {
+        sb_addf(b, "The download failed: %s. Nothing was run.", err);
         *label = utf8_dup("The download failed");
         goto out;
     }
+    fmt_bytes(bytes, sizeof(bytes), got);
+    if (got < (1 << 20))
+        snprintf(bytes, sizeof(bytes), "%llu KB", (got + 1023) >> 10);
+    if (!runnable_file(path, what, sizeof(what))) {
+        DeleteFileW(path);
+        sb_addf(b, "The address gave %s (%s), not a Windows program or installer, so nothing was run and "
+                   "the file was deleted. A site that shows a download page needs the direct address of "
+                   "the .exe or .msi file instead.", what, bytes);
+        *label = utf8_dup("Downloaded something that is not a program; nothing was run");
+        activity_log("download from %s was %s; deleted", url, what);
+        goto out;
+    }
     if ((INT_PTR)ShellExecuteW(NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL) <= 32) {
-        sb_addf(b, "Downloaded to %s, but it could not be started.", upath);
+        sb_addf(b, "Downloaded to %s (%s), but it could not be started.", upath, bytes);
         *label = utf8_dup("Downloaded a program, but it did not start");
     } else {
-        sb_addf(b, "Downloaded to %s and started. Its window should appear on the desktop.", upath);
+        sb_addf(b, "Downloaded to %s (%s) and started. Its window should appear on the desktop.", upath, bytes);
         *label = utf8_dup("Downloaded and started a program (allowed)");
         activity_log("downloaded and ran %s -> %s", url, upath);
     }
