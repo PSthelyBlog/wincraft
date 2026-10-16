@@ -251,7 +251,7 @@ static BOOL system_process(const WCHAR *exe)
     static const WCHAR *names[] = {
         L"services.exe", L"winedevice.exe", L"plugplay.exe", L"svchost.exe", L"rpcss.exe",
         L"explorer.exe", L"conhost.exe", L"wcshell.exe", L"wcagent.exe", L"start.exe",
-        L"rundll32.exe", L"winedbg.exe", L"wineboot.exe", L"tabtip.exe", L"cmd.exe",
+        L"rundll32.exe", L"winedbg.exe", L"wineboot.exe", L"tabtip.exe", L"cmd.exe", L"lsass.exe",
     };
     unsigned i;
 
@@ -301,6 +301,19 @@ static ULONGLONG process_memory(DWORD pid)
     return n;
 }
 
+/* The program's file, as a Windows path (Z: for files outside C:). */
+static BOOL process_file(DWORD pid, WCHAR *out, DWORD size)
+{
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    BOOL ok;
+
+    if (!h)
+        return FALSE;
+    ok = QueryFullProcessImageNameW(h, 0, out, &size);
+    CloseHandle(h);
+    return ok;
+}
+
 static BOOL process_name(DWORD pid, WCHAR *out, int size)
 {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -324,6 +337,7 @@ static void list_running(sb_t *b, BOOL detailed)
 {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     PROCESSENTRY32W pe;
+    WCHAR file[MAX_PATH];
     char mem[32];
     int n = 0;
 
@@ -344,6 +358,10 @@ static void list_running(sb_t *b, BOOL detailed)
                 (unsigned long)pe.cntThreads, pe.cntThreads == 1 ? "" : "s", mem);
         if (system_process(pe.szExeFile))
             sb_add(b, "  [part of Wine or WinCraft]");
+        if (process_file(pe.th32ProcessID, file, ARRAYSIZE(file))) {
+            sb_add(b, "  file: ");
+            sb_addw(b, file);
+        }
         wi.pid = pe.th32ProcessID;
         wi.out = b;
         wi.count = 0;
@@ -1072,8 +1090,8 @@ const tool_def g_tools[] = {
       "network, Wine version, installed and running programs, recent problems in the logs.",
       "{\"type\":\"object\",\"properties\":{}}" },
     { "list_programs", TIER_READ,
-      "List the running Windows programs with their process id (pid), memory use, window titles and "
-      "whether a window is not responding. Set include_system to also list Wine's own processes.",
+      "List the running Windows programs with their process id (pid), memory use, file, window titles "
+      "and whether a window is not responding. Set include_system to also list Wine's own processes.",
       "{\"type\":\"object\",\"properties\":{\"include_system\":{\"type\":\"boolean\"}}}" },
     { "list_installed_programs", TIER_READ,
       "List installed Windows programs (Add or Remove Programs) and the Start menu entries.",

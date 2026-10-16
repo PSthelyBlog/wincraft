@@ -67,6 +67,12 @@
 - C: is the Windows side of the person's home (Documents, Downloads,
   Program Files). Z: shows the whole underlying Linux file system.
 - *File Explorer* is on the desktop and in the Start menu.
+- The list of running programs shows each program's file. Wine's own
+  programs are in C:\windows, WinCraft's in Z:\usr\lib\wincraft, and what
+  the person installed or downloaded is elsewhere on C:, usually under
+  C:\Program Files or Downloads. A program whose file is anywhere else, such
+  as Z:\tmp or Z:\run, is not part of WinCraft and was not installed in
+  Windows: say where it is, and do not guess what it does from its name.
 
 ## Live session or installed
 
