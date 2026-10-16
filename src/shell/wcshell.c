@@ -2091,6 +2091,14 @@ static int setup(void)
         FAILED(make_link(desktop, L"Install WinCraft OS", target, L"/install",
                          L"Install WinCraft OS on this computer", shell32, -9)))
         failed++;
+    /* WinCraft Assistant lives next to the shell. Its desktop icon sets it up;
+       it adds its own Start menu entry once set up. */
+    PathRemoveFileSpecW(target);
+    PathAppendW(target, L"wcagent.exe");
+    if (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES &&
+        FAILED(make_link(desktop, L"WinCraft Assistant", target, NULL,
+                         L"Ask about WinCraft OS and this computer", NULL, 0)))
+        failed++;
     CoUninitialize();
     return failed;
 }

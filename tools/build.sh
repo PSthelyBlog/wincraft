@@ -239,6 +239,13 @@ step_rootfs() {
         make -s -C $W/src/shell OUT=$B/shell
         install -m755 $B/shell/*.exe $R/usr/lib/wincraft/
     fi
+    if [ -d $W/src/agent ]; then
+        say "Building WinCraft Assistant"
+        make -s -C $W/src/agent OUT=$B/agent
+        install -m755 $B/agent/wcagent.exe $R/usr/lib/wincraft/
+        mkdir -p $R/usr/share/wincraft/assistant
+        bash $W/tools/assistant-knowledge.sh > $R/usr/share/wincraft/assistant/knowledge.md
+    fi
     [ -d $W/assets ] && rsync -a $W/assets/ $R/usr/share/wincraft/
 
     step_wine

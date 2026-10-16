@@ -9,6 +9,8 @@ Start menu, and there is nothing else on the disk.
 - about **80 MB of RAM** in use at the idle desktop
 - runs live from the ISO, or installs to disk in under a minute
 - 64-bit and 32-bit Windows programs
+- a built-in assistant that knows WinCraft and can look at this computer,
+  using an AI model you choose (optional)
 
 **Status: 0.3, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
@@ -50,6 +52,7 @@ projects that already do the hard parts, and writes everything in between:
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
 | **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
 | **Shell** | `wcshell.exe`: desktop, taskbar, Start menu with search, Run, *Download a Program*, installer front end. A native Win32 program | **written for WinCraft** (`src/shell`) |
+| **Assistant** | `wcagent.exe`: *WinCraft Assistant*, a chat about WinCraft and this computer with the AI model you choose. A native Win32 program | **written for WinCraft** (`src/agent`) |
 | **Boot, install, build** | early userspace, live/installed boot, disk installer, image assembler | **written for WinCraft** |
 
 The userland is not a Linux distribution with a desktop on top. The build
@@ -80,6 +83,11 @@ Verified in QEMU, booting the ISO, unless noted:
   appeared in the Start menu and ran; both the 64-bit and the 32-bit builds.
 - **Firefox 158**, downloaded and installed with *Download a Program* in a
   live session with 8 GB of RAM: browsing works and YouTube plays video.
+- **WinCraft Assistant**, with a real model (Claude Sonnet 5.5 through
+  Anthropic's API, in a live session): setup, chats that look things up on
+  the computer. Against a scripted test server speaking both API formats:
+  every tool, every permission dialog (allow and refuse), stopping a request,
+  errors.
 
 ## What it is not
 
@@ -108,6 +116,41 @@ Be clear-eyed about these before you depend on it:
   of an *installed* disk. Secure Boot is not supported (the boot loader is
   unsigned).
 - It has had no security review. Treat it as a single-user machine.
+
+## WinCraft Assistant
+
+*WinCraft Assistant* answers questions about WinCraft OS and about this
+computer: why a program does not start or stops responding, what is
+installed, how something works here. It uses an AI model from a provider you
+choose, so it needs your own account with one, or a model server on your
+network; WinCraft itself sends nothing anywhere until you set it up.
+
+- **Setting it up.** Open *WinCraft Assistant* on the desktop, pick a
+  provider, enter your API key, press *Load models*, choose one, *Test*,
+  *Save*. It then has its own Start menu entry. Providers: Anthropic
+  (Claude), OpenAI, OpenRouter, and any server with an OpenAI-compatible API,
+  such as Ollama, llama.cpp or LM Studio on another computer (no key needed).
+- **What it knows.** WinCraft's own documentation for the exact version it
+  ships in (this README, the changelog, the notes on the Wine fixes) and a
+  troubleshooting guide, plus an overview of this computer taken when the
+  chat starts: memory, storage, network, installed and running programs,
+  recent errors in the system logs.
+- **What it can do.** Look things up with a fixed set of tools: running
+  programs and their windows, installed programs, the system logs, the
+  registry, the network, crash reports, storage. Each look-up is listed in the
+  chat. Looking inside a program that is not responding (with Wine's
+  debugger) asks first. Ending a program, changing a Wine DLL override,
+  setting a value under HKEY_CURRENT_USER and downloading and running an
+  installer each ask every time, in a dialog the model cannot answer.
+- **What it cannot do.** Run commands, act as administrator, change system
+  settings, install WinCraft, read your documents, browse the web.
+- **Privacy.** What you type and what it looks up are sent to the provider
+  you chose. *Chat > What the assistant can see* shows exactly what is sent
+  at the start of a chat, and *Chat > Activity log* records every look-up and
+  every permission asked. Settings, the activity log and chat transcripts are
+  kept in `%APPDATA%\WinCraft Assistant`. The API key is kept there too,
+  readable only by you, unless you untick *Remember the key*; in a live
+  session all of it is lost at restart.
 
 ## Run it from a build
 
@@ -196,13 +239,16 @@ boot/limine.conf       boot menu of the ISO
 src/init/wcinit.c      PID 1
 src/wm/wcwm.c          window manager
 src/shell/wcshell.c    desktop shell, download tool, installer front end
+src/agent/             WinCraft Assistant: chat window, model APIs, tools,
+                       and its working rules and troubleshooting guide
 src/tools/wcctl.c      talk to wcinit (power off, privileged helpers)
 rootfs/packages.txt    packages the image is cut from
 rootfs/overlay/        WinCraft's own system files
 rootfs/wincraft.reg    registry defaults for the Windows environment
 wine/                  pinned Wine release and WinCraft's patches to it
 tools/                 toolbox entry, image assembler, build steps, VM runner,
-                       test harnesses (xtest, qmp.py), component manifest
+                       test harnesses (xtest, qmp.py), component manifest,
+                       the assistant's knowledge pack (assistant-knowledge.sh)
 ```
 
 Each build also writes `out/wincraft-<version>-components.txt`: every
