@@ -61,7 +61,11 @@ args+=(-device "VGA,xres=${res%x*},yres=${res#*x}"
        -rtc base=utc
        -qmp "unix:$VM/qmp.sock,server=on,wait=off"
        -chardev "socket,id=ser0,path=$VM/serial.sock,server=on,wait=off,logfile=$VM/serial.log"
-       -serial chardev:ser0)
+       -serial chardev:ser0
+       # the clipboard, shared with the guest's wcclip (text only)
+       -device virtio-serial-pci
+       -chardev qemu-vdagent,id=vdagent,clipboard=on,mouse=off
+       -device virtserialport,chardev=vdagent,name=com.redhat.spice.0)
 
 if [ "$uefi" = 1 ]; then
     [ -f "$PROJECT/build/vm/OVMF_VARS.fd" ] ||
@@ -103,7 +107,7 @@ else
     else
         args+=(-audiodev none,id=snd0)
     fi
-    args+=(-display gtk,zoom-to-fit=on)
+    args+=(-display gtk,zoom-to-fit=on,clipboard=on)
     gui=1
 fi
 args+=(-device intel-hda -device hda-output,audiodev=snd0)

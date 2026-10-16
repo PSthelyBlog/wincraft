@@ -43,6 +43,13 @@ udevadm trigger --action=add --type=subsystems
 udevadm trigger --action=add --type=devices
 udevadm settle --timeout=20
 
+# A virtual machine that shares its clipboard (QEMU's qemu-vdagent, SPICE)
+# has a port for it: keep it in step with the desktop's clipboard.
+for port in /sys/class/virtio-ports/*; do
+    [ "$(cat "$port/name" 2>/dev/null)" = com.redhat.spice.0 ] &&
+        echo "clipboard respawn exec /usr/bin/wcclip /dev/${port##*/}" >> /run/wincraft/services
+done
+
 # Compressed swap in RAM keeps small machines usable.
 if [ -b /dev/zram0 ]; then
     half=$(awk '/MemTotal/ {print int($2 / 2)}' /proc/meminfo)

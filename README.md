@@ -35,6 +35,14 @@ qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -nic user,model=virtio-net-pci -cdrom wincraft-0.3-x86_64.iso
 ```
 
+To share the clipboard (text, both ways) with the VM, add QEMU's clipboard
+channel and turn it on in its window:
+
+```sh
+    -chardev qemu-vdagent,id=vda,clipboard=on -device virtio-serial-pci \
+    -device virtserialport,chardev=vda,name=com.redhat.spice.0 -display gtk,clipboard=on
+```
+
 Guest drivers for VirtualBox, VMware and Hyper-V are built into the kernel,
 but only QEMU has been tried. Nothing touches your disks unless you run
 *Install WinCraft OS* from the desktop.
@@ -83,6 +91,10 @@ Verified in QEMU, booting the ISO, unless noted:
   appeared in the Start menu and ran; both the 64-bit and the 32-bit builds.
 - **Firefox 158**, downloaded and installed with *Download a Program* in a
   live session with 8 GB of RAM: browsing works and YouTube plays video.
+- **Clipboard shared with QEMU** (`./wc run`'s window): text copied on the
+  host pastes into Windows programs in the VM and back, including non-ASCII
+  text and texts over 10 KB; it keeps working when the desktop session
+  restarts. Also from a Wayland desktop, into an installed system.
 - **WinCraft Assistant**, with a real model (Claude Sonnet 5.5 through
   Anthropic's API, in a live session): setup, chats that look things up on
   the computer. Against a scripted test server speaking both API formats:
@@ -163,6 +175,9 @@ After [building](#build-it), the same ISO is in `out/`:
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
 ```
 
+`./wc run` shares the clipboard with the VM (text only): `wcclip` in the
+guest keeps QEMU's clipboard channel and the desktop's clipboard in step.
+
 QEMU uses KVM when `/dev/kvm` exists. Without it (virtualisation disabled in
 the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
@@ -242,6 +257,7 @@ src/shell/wcshell.c    desktop shell, download tool, installer front end
 src/agent/             WinCraft Assistant: chat window, model APIs, tools,
                        and its working rules and troubleshooting guide
 src/tools/wcctl.c      talk to wcinit (power off, privileged helpers)
+src/tools/wcclip.c     share the clipboard with a virtual machine's host
 rootfs/packages.txt    packages the image is cut from
 rootfs/overlay/        WinCraft's own system files
 rootfs/wincraft.reg    registry defaults for the Windows environment

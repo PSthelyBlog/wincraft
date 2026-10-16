@@ -61,6 +61,7 @@ step_native() {
     gcc -O2 -static -Wall -Wextra -o $B/native/wcinit $W/src/init/wcinit.c
     gcc -O2 -Wall -Wextra -o $B/native/wcctl $W/src/tools/wcctl.c
     gcc -O2 -Wall -Wextra -Wno-unused-parameter -o $B/native/wcwm $W/src/wm/wcwm.c -lX11
+    gcc -O2 -Wall -Wextra -Wno-unused-parameter -o $B/native/wcclip $W/src/tools/wcclip.c -lX11 -lXfixes
     strip $B/native/*
 }
 
