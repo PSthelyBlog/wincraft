@@ -25,7 +25,7 @@ import sys
 WHOLE = [
     "filesystem", "glibc", "busybox", "tzdata",
     "ca-certificates-mozilla", "ca-certificates-utils",
-    "wine",
+    "wine", "wine-mono",
     "libx11", "xkeyboard-config", "xorg-server", "xorg-server-common",
     "xf86-input-libinput", "libinput", "libwacom", "xorg-xkbcomp",
     "xorg-setxkbmap", "xorg-xrandr",

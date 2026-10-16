@@ -10,6 +10,7 @@ ca-certificates
 
 # -- Windows compatibility layer and what it loads at run time
 wine
+wine-mono
 gnutls
 alsa-lib
 alsa-utils

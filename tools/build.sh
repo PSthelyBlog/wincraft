@@ -188,11 +188,14 @@ step_wine() {
 }
 
 # --------------------------------------------------------------- rootfs
+# mshtml is disabled so that creating the prefix does not stop to offer the
+# Wine Gecko download. mscoree stays on: the image ships Wine Mono in
+# /usr/share/wine/mono, and wineboot sets it up from there, without asking.
 in_root() {    # run a command chrooted into $R as the desktop user
     chroot --userspec=1000:1000 $R /usr/bin/env -i \
         HOME=/home/user USER=user LOGNAME=user PATH=/usr/bin LANG=C.UTF-8 \
         XDG_RUNTIME_DIR=/run/user/1000 WINEPREFIX=/home/user/.wine WINEDEBUG=-all \
-        WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d" "$@"
+        WINEDLLOVERRIDES="mshtml=;winemenubuilder.exe=d" "$@"
 }
 
 mount_root() {

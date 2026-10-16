@@ -25,10 +25,11 @@
   function" means Wine lacks something the program calls.
 - `list_crash_reports` for dump files the program left.
 - Common fixes the person can do: install the runtime the program needs
-  (its vendor's Visual C++ redistributable; .NET programs make Wine offer
-  Wine Mono); choose another Windows version for that program in
-  *Compatibility Settings* (Applications tab); a DLL override only when it
-  is known which DLL is at fault.
+  (its vendor's Visual C++ redistributable; for a program built for .NET 5
+  or later, the Microsoft .NET runtime it names. .NET Framework programs
+  run on Wine Mono, which is built in); choose another Windows version for
+  that program in *Compatibility Settings* (Applications tab); a DLL
+  override only when it is known which DLL is at fault.
 - Kernel drivers, kernel-level anti-cheat, some DRM and copy protection,
   UWP/Store apps cannot work.
 

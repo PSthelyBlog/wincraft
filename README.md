@@ -55,7 +55,7 @@ projects that already do the hard parts, and writes everything in between:
 | Layer | What | Origin |
 |---|---|---|
 | Kernel | Linux 6.18 LTS, one monolithic image, no modules, no firmware blobs. Built with NT synchronisation primitives (`ntsync`) and with PE executables registered as a native binary format | built from source, config in `kernel/` |
-| Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs) | binary package, plus the fixes in `wine/patches` |
+| Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs), with Wine Mono for .NET programs | binary packages, plus the fixes in `wine/patches` |
 | Display | X.Org server, Mesa (software OpenGL) | binary packages |
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
 | **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
@@ -100,6 +100,10 @@ Verified in QEMU, booting the ISO, unless noted:
   the computer. Against a scripted test server speaking both API formats:
   every tool, every permission dialog (allow and refuse), stopping a request,
   errors.
+- **.NET programs**: KeePass 2.61 (.NET Framework, Windows Forms) runs on
+  the built-in Wine Mono with nothing to install. ILSpy 11 (.NET 10) asks for
+  Microsoft's .NET Desktop Runtime; after its installer, ILSpy runs and
+  decompiles.
 
 ## What it is not
 
@@ -119,7 +123,11 @@ Be clear-eyed about these before you depend on it:
 - **No web browser included.** Use *Download a Program* → *Get Firefox*, and
   give a live session 8 GB of RAM for it: 4 GB is not enough.
 - **No media codecs** (Media Foundation / DirectShow playback), no printing.
-- **.NET programs** need Wine Mono, which Wine offers to download on first use.
+- **.NET is partly covered.** Wine Mono, built in, stands in for the .NET
+  Framework, but not for all of it. Programs for .NET 5 and later need
+  Microsoft's .NET runtime: they say which one when it is missing, and it
+  installs like any program. Some .NET programs fail for other reasons:
+  Paint.NET 5.1's installer crashes while checking the graphics hardware.
 - Notification-area icons appear in a small floating window above the clock
   rather than inside the taskbar.
 - The clock is UTC and the keyboard layout is US unless set at boot
@@ -275,8 +283,9 @@ upstream source.
 
 WinCraft's own code is MIT licensed (see `LICENSE`); the patches in
 `wine/patches` are changes to Wine and carry Wine's license, LGPL-2.1+. A
-built image also contains Linux (GPL-2.0), Wine (LGPL-2.1+) and other
-components under their own licenses (see `NOTICE`).
+built image also contains Linux (GPL-2.0), Wine (LGPL-2.1+), Wine Mono
+(GPL-2.0+, LGPL-2.1 and MPL-1.1) and other components under their own
+licenses (see `NOTICE`).
 
 WinCraft OS is not affiliated with or endorsed by Microsoft. "Windows" is a
 trademark of Microsoft Corporation, used here only to describe compatibility.
