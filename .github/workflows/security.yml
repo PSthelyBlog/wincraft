@@ -1,0 +1,25 @@
+# Every Monday, check the latest WinCraft OS release against Arch's security
+# tracker and kernel.org (tools/security-check.py; "Security updates" in the
+# README). A run fails when the release lacks a published fix, and GitHub
+# tells the repository's owner.
+name: Security check
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Components list of the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download --repo "$GITHUB_REPOSITORY" --pattern '*-components.txt' --dir release
+      - name: Check it
+        run: python3 tools/security-check.py release/*-components.txt

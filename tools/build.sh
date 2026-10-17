@@ -40,8 +40,37 @@ step_kernel() {
 }
 
 # ---------------------------------------------------------------- stage
+# The Arch Linux Archive date rootfs/pacman.conf takes packages from. The stage
+# records the date it was made from; a stage from another date is made again
+# from nothing, so that it holds exactly that day's packages.
+snapshot() {
+    sed -n 's|^Server *= *https://archive\.archlinux\.org/repos/\([0-9]*/[0-9]*/[0-9]*\)/.*|\1|p' \
+        $W/rootfs/pacman.conf | sort -u
+}
+
+stage_ready() {
+    [ -d $S/usr ] && [ "$(cat $S/var/lib/pacman/wincraft-snapshot 2>/dev/null)" = "$(snapshot)" ]
+}
+
 step_stage() {
-    say "Staging Arch packages"
+    local date m
+    date=$(snapshot)
+    if [ -z "$date" ] || [ "$(echo "$date" | wc -l)" != 1 ]; then
+        echo "stage: the Server lines in rootfs/pacman.conf must name one archive date" >&2
+        exit 1
+    fi
+    if [ -d $S/usr ] && ! stage_ready; then
+        say "Snapshot is now $date: staging again from nothing"
+        umount -R $S/proc $S/dev $S/sys 2>/dev/null || true
+        for m in proc dev sys; do
+            if mountpoint -q $S/$m; then
+                echo "stage: $S/$m is still mounted; not deleting the stage" >&2
+                exit 1
+            fi
+        done
+        rm -rf $S
+    fi
+    say "Staging Arch packages as of $date"
     mkdir -p $S/var/lib/pacman $S/proc $S/dev $S/sys
     mountpoint -q $S/proc || mount -t proc proc $S/proc
     mountpoint -q $S/dev || mount --rbind /dev $S/dev
@@ -51,6 +80,7 @@ step_stage() {
         -Sy --noconfirm --needed $(grep -v '^#' $W/rootfs/packages.txt | xargs) \
         > $B/stage.log 2>&1 || { tail -30 $B/stage.log; exit 1; }
     umount -R $S/proc $S/dev $S/sys 2>/dev/null || true
+    echo "$date" > $S/var/lib/pacman/wincraft-snapshot
 }
 
 # --------------------------------------------------------------- native
@@ -79,7 +109,7 @@ step_wine() {
     local out=$B/wine-overlay src=$B/wine-src bld=$B/wine-build
     local patches=($W/wine/patches/*.patch)
     [ -e "${patches[0]}" ] || { rm -rf $out $out.stamp; return 0; }
-    [ -d $S/usr ] || step_stage
+    stage_ready || step_stage
 
     local ver staged stamp
     ver=$(cat $W/wine/VERSION)
@@ -211,7 +241,7 @@ umount_root() {
 }
 
 step_rootfs() {
-    [ -d $S/usr ] || step_stage
+    stage_ready || step_stage
     say "Assembling root filesystem"
     umount_root
     rm -rf $R

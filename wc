@@ -11,6 +11,7 @@
 #   ./wc run [options]    boot the ISO in QEMU   (see tools/vm --help)
 #   ./wc desktop          run just the desktop session, natively (tools/xtest)
 #   ./wc shell            a shell inside the toolbox
+#   ./wc security [LIST]  which published security fixes the newest image lacks
 #   ./wc clean            delete build/ and out/
 #
 # Nothing is installed on the host and no root access is needed: the build
@@ -80,11 +81,12 @@ case "$cmd" in
     run)      exec tools/vm "$@" ;;
     desktop)  exec tools/xtest start "$@" ;;
     shell)    toolbox; exec tools/tb "$@" ;;
+    security) toolbox; exec tools/tb python3 /work/tools/security-check.py "$@" ;;
     clean)
         # Files in build/ belong to the toolbox's user-id range: remove them
         # the same way they were created.
         [ -d build ] && unshare --user --map-root-user --map-auto -- rm -rf build
         rm -rf out
         ;;
-    *)        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac

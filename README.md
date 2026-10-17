@@ -264,6 +264,39 @@ lays that over the packaged files.
   the current ones were, cannot be sent there; it points to the matching
   WineHQ bug or merge request instead, when there is one.
 
+### Security updates
+
+An installed WinCraft runs the system image it was installed or last updated
+with, so it gets fixes only from a new release. What a release contains is
+pinned:
+
+- **Arch packages** come from the Arch Linux Archive as the repositories were
+  on one day: the date in `rootfs/pacman.conf`. Every build of a release
+  therefore takes exactly the same packages. When the date changes,
+  `./wc stage` makes the stage again from nothing.
+- **The kernel** is the upstream long-term release named in `kernel/VERSION`.
+- **Wine** is the release in `wine/VERSION`, with the patches in
+  `wine/patches`.
+
+`./wc security` checks the newest image in `out/`, or a components list you
+name, against Arch's security tracker and kernel.org, and lists the published
+fixes the image lacks. The tracker also lists some advisories with no fixed
+version; many of those are years out of date there, so the check shows them
+for a person to judge, with the version each was recorded against.
+
+A scheduled GitHub Actions job, `.github/workflows/security.yml`, runs the
+same check every Monday on the latest release. It fails when there is a fix to
+take, and GitHub then e-mails the repository's owner.
+
+To take the fixes:
+1. Move the date in `rootfs/pacman.conf` forward (both lines).
+2. Set `kernel/VERSION` to the newest point release of the series.
+3. Run `./wc kernel` and `./wc stage`, then build and test as for any release.
+
+If the new date brings a newer Arch `wine` package, the build stops until
+`wine/VERSION` names it and the patches in `wine/patches` are checked against
+it.
+
 ## Layout
 
 ```
