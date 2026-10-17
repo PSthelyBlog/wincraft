@@ -87,6 +87,7 @@ typedef struct {
     WCHAR model[160];
     WCHAR key[512];
     BOOL remember_key;
+    BOOL web_pages;             /* the assistant may ask to read web pages */
 } config;
 
 /* ---- talking to the model ---- */
@@ -121,7 +122,7 @@ BOOL llm_cancelled(void);
 void llm_host(const config *cfg, WCHAR *out, int size, int *port);
 
 /* ---- tools and what the assistant knows ---- */
-enum { TIER_READ, TIER_DIAGNOSE, TIER_CHANGE };
+enum { TIER_READ, TIER_DIAGNOSE, TIER_WEB, TIER_CHANGE };
 
 typedef struct {
     const char *name;
@@ -136,7 +137,7 @@ typedef BOOL (*approve_fn)(const tool_def *t, const char *title, const char *det
 extern const tool_def g_tools[];
 extern const int g_ntools;
 
-json *tools_json(int format);
+json *tools_json(int format, BOOL web_pages);
 const tool_def *tool_find(const char *name);
 /* Runs a tool; returns the result text for the model (caller frees). *label
  * receives a short line for the transcript, e.g. "Looked at running programs". */

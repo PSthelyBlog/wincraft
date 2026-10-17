@@ -34,7 +34,7 @@ enum {
     IDM_NEW = 200, IDM_SEE, IDM_ACTIVITY, IDM_SETTINGS, IDM_EXIT, IDM_ABOUT,
     /* setup window */
     IDC_PRESET = 300, IDC_BASE, IDC_KEY, IDC_REMEMBER, IDC_MODEL, IDC_LOAD, IDC_TEST, IDC_SAVE,
-    IDC_SETUP_STATUS,
+    IDC_SETUP_STATUS, IDC_WEB,
 };
 
 enum {
@@ -53,7 +53,7 @@ WCHAR g_provider_host[256];         /* also read by tools.c */
 int g_provider_port;
 static json *g_messages, *g_tools_json;
 static char *g_system, *g_snapshot;
-static BOOL g_busy, g_diag_allowed;
+static BOOL g_busy, g_diag_allowed, g_web_allowed;   /* "Allow for this chat" */
 static long g_tok_in, g_tok_out;
 static WCHAR g_chat_file[MAX_PATH];
 static WNDPROC g_input_proc;
@@ -101,6 +101,7 @@ static BOOL load_config(config *c)
     GetPrivateProfileStringW(L"Provider", L"Address", L"", c->base_url, ARRAYSIZE(c->base_url), ini);
     GetPrivateProfileStringW(L"Provider", L"Model", L"", c->model, ARRAYSIZE(c->model), ini);
     c->remember_key = GetPrivateProfileIntW(L"Provider", L"RememberKey", 1, ini);
+    c->web_pages = GetPrivateProfileIntW(L"Assistant", L"WebPages", 1, ini);
     c->format = !lstrcmpiW(fmt, L"anthropic") ? FMT_ANTHROPIC : FMT_OPENAI;
     if (c->remember_key && (key = read_file_utf8(keyfile, 4096, NULL))) {
         WCHAR *w = w_from_utf8(key);
@@ -137,6 +138,7 @@ static void save_config(const config *c)
     WritePrivateProfileStringW(L"Provider", L"Address", c->base_url, ini);
     WritePrivateProfileStringW(L"Provider", L"Model", c->model, ini);
     WritePrivateProfileStringW(L"Provider", L"RememberKey", c->remember_key ? L"1" : L"0", ini);
+    WritePrivateProfileStringW(L"Assistant", L"WebPages", c->web_pages ? L"1" : L"0", ini);
     DeleteFileW(keyfile);
     if (!c->remember_key || !c->key[0])
         return;
@@ -244,6 +246,7 @@ static void setup_read(config *c)
     StrTrimW(c->key, L" \t\r\n");
     StrTrimW(c->model, L" \t");
     c->remember_key = IsDlgButtonChecked(g_setup, IDC_REMEMBER) == BST_CHECKED;
+    c->web_pages = IsDlgButtonChecked(g_setup, IDC_WEB) == BST_CHECKED;
 }
 
 static DWORD WINAPI setup_thread(void *arg)
@@ -424,7 +427,7 @@ static BOOL setup_window(HWND owner, BOOL first)
         L"What you type, and what the assistant looks up about this computer, is sent to that "
         L"provider. Nothing on the computer is changed unless you allow it.";
     WNDCLASSEXW wc;
-    RECT rc = { 0, 0, 560, 400 };
+    RECT rc = { 0, 0, 560, 430 };
     HWND ctl;
     MSG msg;
     int i, sel = 0;
@@ -460,12 +463,14 @@ static BOOL setup_window(HWND owner, BOOL first)
             { L"STATIC", L"Model:", 0, 16, 196, 90, 20, 0 },
             { L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL, 110, 192, 314, 240, IDC_MODEL },
             { L"BUTTON", L"Load models", WS_TABSTOP, 432, 191, 112, 26, IDC_LOAD },
-            { L"STATIC", L"", 0, 16, 232, 528, 40, IDC_SETUP_STATUS },
-            { L"STATIC", privacy, 0, 16, 284, 528, 36, 0 },
-            { L"STATIC", L"", 0, 16, 322, 528, 20, 1 },
-            { L"BUTTON", L"Test", WS_TABSTOP, 252, 354, 90, 30, IDC_TEST },
-            { L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 350, 354, 90, 30, IDC_SAVE },
-            { L"BUTTON", L"Cancel", WS_TABSTOP, 448, 354, 96, 30, IDCANCEL },
+            { L"BUTTON", L"Let the assistant read web pages, after asking you", WS_TABSTOP | BS_AUTOCHECKBOX,
+              110, 226, 434, 22, IDC_WEB },
+            { L"STATIC", L"", 0, 16, 258, 528, 40, IDC_SETUP_STATUS },
+            { L"STATIC", privacy, 0, 16, 306, 528, 36, 0 },
+            { L"STATIC", L"", 0, 16, 346, 528, 20, 1 },
+            { L"BUTTON", L"Test", WS_TABSTOP, 252, 384, 90, 30, IDC_TEST },
+            { L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 350, 384, 90, 30, IDC_SAVE },
+            { L"BUTTON", L"Cancel", WS_TABSTOP, 448, 384, 96, 30, IDCANCEL },
         };
 
         for (i = 0; i < (int)ARRAYSIZE(items); i++) {
@@ -493,6 +498,7 @@ static BOOL setup_window(HWND owner, BOOL first)
         setup_preset_changed(TRUE);
     }
     CheckDlgButton(g_setup, IDC_REMEMBER, cur.base_url[0] && !cur.remember_key ? BST_UNCHECKED : BST_CHECKED);
+    CheckDlgButton(g_setup, IDC_WEB, cur.web_pages ? BST_CHECKED : BST_UNCHECKED);
     i = cur.base_url[0] ? IDC_KEY : IDC_PRESET;
     SecureZeroMemory(&cur, sizeof(cur));
 
@@ -586,9 +592,9 @@ static void show_what_it_sees(void)
             g_snapshot ? ", as sent for the current chat" : ", as it would be sent now");
     sb_add(&b, g_snapshot ? g_snapshot : snap);
     sb_add(&b, "\nDuring the chat it looks things up with tools, listed in the chat as it uses them, and "
-               "everything you type is sent too. It never reads your documents. Changes to the computer, and "
-               "looking inside a running program, only happen after you allow them. Every tool use is "
-               "recorded in the activity log.\n");
+               "everything you type is sent too. It never reads your documents. Changes to the computer, "
+               "looking inside a running program and reading pages on the internet only happen after you allow "
+               "them. Every tool use is recorded in the activity log.\n");
     show_text(L"What the assistant can see", b.s, FALSE);
     sb_free(&b);
     free(knowledge);
@@ -730,7 +736,11 @@ static BOOL approve_cb(const tool_def *t, const char *title, const char *detail,
 
     if (llm_cancelled())
         return FALSE;
-    if (t->tier == TIER_DIAGNOSE && g_diag_allowed) {
+    if (t->tier == TIER_WEB && !g_cfg.web_pages) {
+        activity_log("refused %s: switched off in the settings", t->name);
+        return FALSE;
+    }
+    if ((t->tier == TIER_DIAGNOSE && g_diag_allowed) || (t->tier == TIER_WEB && g_web_allowed)) {
         activity_log("allowed (for this chat) %s: %s", t->name, title);
         return TRUE;
     }
@@ -740,18 +750,39 @@ static BOOL approve_cb(const tool_def *t, const char *title, const char *detail,
 
 typedef HRESULT (WINAPI *task_dialog_fn)(const TASKDIALOGCONFIG *, int *, int *, BOOL *);
 
+/* Wine's task dialog shows its text in static controls that take "&" as the
+ * mark of a keyboard shortcut, so an address would lose its "&"s: double them. */
+static WCHAR *no_prefix(const WCHAR *s)
+{
+    const WCHAR *p;
+    WCHAR *out, *q;
+    size_t n = 0;
+
+    for (p = s; *p; p++)
+        n += *p == L'&' ? 2 : 1;
+    out = malloc((n + 1) * sizeof(WCHAR));
+    for (p = s, q = out; *p; p++) {
+        if (*p == L'&')
+            *q++ = L'&';
+        *q++ = *p;
+    }
+    *q = 0;
+    return out;
+}
+
 static void ask_permission(struct approval *a)
 {
     WCHAR *title = w_from_utf8(a->title), *detail = w_from_utf8(a->detail);
+    WCHAR *td_title = no_prefix(title), *td_detail = no_prefix(detail);
     TASKDIALOG_BUTTON buttons[3];
     TASKDIALOGCONFIG tdc;
     task_dialog_fn td = (task_dialog_fn)(void *)GetProcAddress(GetModuleHandleW(L"comctl32.dll"), "TaskDialogIndirect");
     int pressed = 0, n = 0;
-    BOOL diag = a->tool->tier == TIER_DIAGNOSE;
+    BOOL per_chat = a->tool->tier == TIER_DIAGNOSE || a->tool->tier == TIER_WEB;
 
     buttons[n].nButtonID = 100;
     buttons[n++].pszButtonText = L"&Allow";
-    if (diag) {
+    if (per_chat) {
         buttons[n].nButtonID = 101;
         buttons[n++].pszButtonText = L"Allow for this &chat";
     }
@@ -763,9 +794,9 @@ static void ask_permission(struct approval *a)
     tdc.hInstance = g_inst;
     tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
     tdc.pszWindowTitle = APP_NAME;
-    tdc.pszMainIcon = diag ? TD_INFORMATION_ICON : TD_WARNING_ICON;
-    tdc.pszMainInstruction = title;
-    tdc.pszContent = detail;
+    tdc.pszMainIcon = per_chat ? TD_INFORMATION_ICON : TD_WARNING_ICON;
+    tdc.pszMainInstruction = td_title;
+    tdc.pszContent = td_detail;
     tdc.cButtons = n;
     tdc.pButtons = buttons;
     tdc.nDefaultButton = 102;
@@ -777,10 +808,14 @@ static void ask_permission(struct approval *a)
         pressed = MessageBoxW(g_main, text, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES ? 100 : 102;
     }
     a->ok = pressed == 100 || pressed == 101;
-    if (pressed == 101)
+    if (pressed == 101 && a->tool->tier == TIER_WEB)
+        g_web_allowed = TRUE;
+    else if (pressed == 101)
         g_diag_allowed = TRUE;
     activity_log("%s %s: %s", a->ok ? (pressed == 101 ? "allowed for this chat" : "allowed") : "refused",
                  a->tool->name, a->title);
+    free(td_title);
+    free(td_detail);
     free(title);
     free(detail);
 }
@@ -800,6 +835,10 @@ static void build_system_prompt(void)
                 "started. Call get_system_snapshot for a fresh copy.\n\n", st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute);
     sb_add(&b, g_snapshot);
+    if (!g_cfg.web_pages)
+        sb_add(&b, "\n\nReading web pages is switched off in this assistant's settings, so read_web_page is not "
+                   "available. When a page would help, say so, and that the person can switch it on under "
+                   "Chat > Settings.\n");
     free(g_system);
     g_system = sb_take(&b);
     free(knowledge);
@@ -958,6 +997,10 @@ static DWORD WINAPI chat_thread(void *arg)
                 results[i] = utf8_dup("There is no tool of that name.");
             } else if (llm_cancelled()) {
                 results[i] = utf8_dup("Stopped by the person before this ran.");
+            } else if (t->tier == TIER_WEB && !g_cfg.web_pages) {
+                results[i] = utf8_dup("Reading web pages is switched off in this assistant's settings, so nothing "
+                                      "was read. The person can switch it on under Chat > Settings.");
+                post_text("  \xc2\xb7 Reading web pages is switched off in the settings\n");
             } else {
                 WCHAR status[128];
 
@@ -1004,7 +1047,7 @@ static void new_chat(void)
     g_system = NULL;
     free(g_snapshot);
     g_snapshot = NULL;
-    g_diag_allowed = FALSE;
+    g_diag_allowed = g_web_allowed = FALSE;
     g_tok_in = g_tok_out = 0;
     g_chat_file[0] = 0;
     if (app_data_dir(dir)) {
@@ -1102,7 +1145,7 @@ static void reconfigure(void)
     if (setup_window(g_main, FALSE)) {
         llm_host(&g_cfg, g_provider_host, ARRAYSIZE(g_provider_host), &g_provider_port);
         json_free(g_tools_json);
-        g_tools_json = tools_json(g_cfg.format);
+        g_tools_json = tools_json(g_cfg.format, g_cfg.web_pages);
         new_chat();
     }
 }
@@ -1275,7 +1318,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
             add_start_menu_entry();
     }
     llm_host(&g_cfg, g_provider_host, ARRAYSIZE(g_provider_host), &g_provider_port);
-    g_tools_json = tools_json(g_cfg.format);
+    g_tools_json = tools_json(g_cfg.format, g_cfg.web_pages);
     activity_log("opened; provider %S, model %S", g_provider_host, g_cfg.model);
 
     ZeroMemory(&wc, sizeof(wc));

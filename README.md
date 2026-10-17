@@ -162,10 +162,18 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   debugger) asks first. Ending a program, changing a Wine DLL override,
   setting a value under HKEY_CURRENT_USER and downloading and running an
   installer each ask every time, in a dialog the model cannot answer.
+- **Reading web pages.** When the answer needs something current, such as a
+  program's newest version and its download address, the assistant asks to
+  read pages on the internet. The first page of a chat asks you; you can
+  allow the rest of that chat. Each page read is listed in the chat. It reads
+  only https pages on the public internet, never addresses on your own
+  network, and keeps no cookies. *Chat > Settings* can switch this off.
 - **What it cannot do.** Run commands, act as administrator, change system
-  settings, install WinCraft, read your documents, browse the web.
-- **Privacy.** What you type and what it looks up are sent to the provider
-  you chose. *Chat > What the assistant can see* shows exactly what is sent
+  settings, install WinCraft, read your documents, fill in forms or sign in
+  on websites.
+- **Privacy.** What you type and what it looks up, including the text of the
+  web pages it reads, are sent to the provider you chose. Sites it reads see
+  this computer's internet address, as with any browser. *Chat > What the assistant can see* shows exactly what is sent
   at the start of a chat, and *Chat > Activity log* records every look-up and
   every permission asked. Settings, the activity log and chat transcripts are
   kept in `%APPDATA%\WinCraft Assistant`. The API key is kept there too,
