@@ -1630,21 +1630,24 @@ static void http_error(DWORD e, char *err, size_t errsize)
 
 /* An address or path broken into lines for a permission dialog. Wine's
  * dialogs cut off a word too long for the line instead of wrapping it, and the
- * person must be able to read all of it. */
+ * person must be able to read all of it. A line ends after a separator of the
+ * address or path if one is near, else after a dash, else where it must. */
 static void dialog_lines(const char *text, char *out, size_t size)
 {
+    static const char *const marks[] = { "/\\?&", "-_=" };
     const char *p = text;
     sb_t b;
 
     sb_init(&b);
     while (strlen(p) > 46) {
-        size_t cut = 46, i;
+        size_t cut = 0, i, m;
 
-        for (i = 46; i > 30; i--)
-            if (strchr("/\\?&=", p[i - 1])) {
-                cut = i;
-                break;
-            }
+        for (m = 0; m < ARRAYSIZE(marks) && !cut; m++)
+            for (i = 46; i > 12 && !cut; i--)
+                if (strchr(marks[m], p[i - 1]))
+                    cut = i;
+        if (!cut)
+            cut = 46;
         while (cut > 1 && ((unsigned char)p[cut] & 0xc0) == 0x80)    /* not inside a UTF-8 character */
             cut--;
         sb_addn(&b, p, cut);

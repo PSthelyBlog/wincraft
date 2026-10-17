@@ -49,6 +49,11 @@
 - Wired Ethernet with DHCP only; there is no Wi-Fi or Bluetooth.
 - `check_network`: no gateway means no connection (cable, or the virtual
   machine's network setting); a failing name lookup means DNS does not work.
+- In a QEMU virtual machine with QEMU's default network (the README's
+  command, and `./wc run`), WinCraft is on a private network, 10.0.2.x,
+  behind the host. Connections out work: to the internet, to other machines
+  on the host's network, and to the host itself at 10.0.2.2. Only
+  connections into WinCraft from elsewhere need port forwarding in QEMU.
 
 ## Display, graphics, sound
 

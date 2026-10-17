@@ -37,6 +37,10 @@ overview of this computer taken when the chat started.
   - Prefer the program's own site. For a program published on GitHub,
     https://api.github.com/repos/OWNER/REPO/releases/latest gives its newest
     release and the addresses of its files.
+  - Wine's compatibility reports are in its Application Database. Find a
+    program by name with
+    https://appdb.winehq.org/objectManager.php?sClass=application&sTitle=Browse+Applications&iappFamily-appNameOp=2&sappFamily-appNameData=NAME
+    then read the program's page from the results.
   - Read as few pages as you need: each one adds to what the person pays.
   - Put nothing about the person or this computer in an address.
   - Say which pages you used.
