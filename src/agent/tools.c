@@ -1994,8 +1994,9 @@ static char *fetch_page(const char *start, size_t *len, char *ctype, size_t ctsi
         WCHAR *wurl, host[256], where[2048];
         URL_COMPONENTS uc;
         HINTERNET con = NULL, req = NULL;
-        DWORD status = 0, size = sizeof(status), off = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES;
+        DWORD status = 0, size = sizeof(status), off = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES, e;
         char *hash = strchr(url, '#');
+        int tries = 0;
 
         if (hop > 5) {
             snprintf(err, errsize, "the site sent it on too many times");
@@ -2016,6 +2017,10 @@ static char *fetch_page(const char *start, size_t *len, char *ctype, size_t ctsi
         lstrcpynW(host, uc.lpszHostName, uc.dwHostNameLength + 1);
         if (!public_host(host, err, errsize))
             goto next;
+        /* No WINHTTP_OPTION_DECOMPRESSION: Wine 11.19 then leaves the end of a
+         * compressed response unread, and the next request on that connection,
+         * which it keeps for reuse, fails with ERROR_WINHTTP_INVALID_SERVER_RESPONSE. */
+    again:
         if (!(con = WinHttpConnect(ses, host, uc.nPort, 0)) ||
             !(req = WinHttpOpenRequest(con, L"GET", uc.dwUrlPathLength ? uc.lpszUrlPath : L"/", NULL,
                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)) ||
@@ -2023,16 +2028,17 @@ static char *fetch_page(const char *start, size_t *len, char *ctype, size_t ctsi
             http_error(GetLastError(), err, errsize);
             goto next;
         }
-#ifdef WINHTTP_OPTION_DECOMPRESSION
-        {
-            DWORD dec = WINHTTP_DECOMPRESSION_FLAG_ALL;
-
-            WinHttpSetOption(req, WINHTTP_OPTION_DECOMPRESSION, &dec, sizeof(dec));
-        }
-#endif
         if (!WinHttpSendRequest(req, headers, (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
             !WinHttpReceiveResponse(req, NULL)) {
-            http_error(GetLastError(), err, errsize);
+            e = GetLastError();
+            /* a kept connection the site has dropped meanwhile: once more, on a new one */
+            if ((e == ERROR_WINHTTP_INVALID_SERVER_RESPONSE || e == ERROR_WINHTTP_CONNECTION_ERROR) && !tries++) {
+                WinHttpCloseHandle(req);
+                WinHttpCloseHandle(con);
+                req = con = NULL;
+                goto again;
+            }
+            http_error(e, err, errsize);
             goto next;
         }
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
