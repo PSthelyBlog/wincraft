@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1 — 2026-10-17
+
+Security fixes, and the first release built from a pinned package snapshot.
+
+- **Linux 6.18.57**, the newest point release of the 6.18 long-term series,
+  with its fixes. 0.6 had 6.18.56.
+- **Arch packages as of 2026-10-16**, three days newer than 0.6's:
+  - freetype2 2.15.0, the font renderer, which reads fonts from programs and
+    web pages;
+  - new builds of zlib and the X server.
+- Wine stays at 11.19. Arch moved to Wine 11.20 on 2026-10-17; that will
+  come in a release of its own, with WinCraft's Wine patches checked against
+  it.
+- **Builds are reproducible from now on.** The Arch packages come from the
+  Arch Linux Archive for a fixed date, set in `rootfs/pacman.conf`.
+- **`./wc security`** lists the published security fixes a release lacks,
+  and a weekly job runs it on the latest release. See "Security updates" in
+  the README.
+
 ## 0.6 — 2026-10-17
 
 WinCraft Assistant can check the web, and its answers are easier to read.
