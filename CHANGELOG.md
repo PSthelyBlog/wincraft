@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6 — 2026-10-17
+
+WinCraft Assistant can check the web, and its answers are easier to read.
+
+- **The assistant reads web pages, after asking.** It offered the version of
+  a program it remembered: VLC 3.0.21 when 3.0.24 was out, a LibreOffice two
+  years old. Now it reads the program's official page first, and takes the
+  version and the download address from there. It also finds Wine's
+  compatibility reports for a program on Wine's AppDB.
+  - The first page of a chat asks you; you can allow the rest of that chat.
+    Every page read is listed in the chat.
+  - It reads only https pages on the public internet, never addresses on
+    your own network, even when a site redirects there, and keeps no
+    cookies.
+  - A page's text counts as data, not instructions, and is cut at about
+    6,000 tokens.
+  - *Chat > Settings* can switch this off.
+- **Answers show as rich text.** Lists, bold and italics show as such, file
+  paths in a fixed-width font, and a table as a list. Web addresses are
+  links: a click opens them in the browser you installed, such as Firefox
+  from *Download a Program*.
+- **Permission dialogs show the whole address.** Wine's dialogs dropped
+  every "&" and cut off long addresses, so a download's address could show
+  wrongly.
+- **The assistant knows QEMU's default network.** WinCraft can connect out
+  from it to your network, and to the host at 10.0.2.2.
+
+Tested with Claude Sonnet 5.5 through Anthropic's API on an installed
+system. The assistant found VLC 3.0.24 on VideoLAN's page and installed it
+over 3.0.21. It installed PuTTY 0.85 from PuTTY's site. It read Wine's AppDB
+ratings for four programs, and a link in its answer opened in Firefox.
+
 ## 0.5 — 2026-10-17
 
 Fixes found while using 0.4, most of them through WinCraft Assistant.
