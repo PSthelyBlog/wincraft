@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5 — 2026-10-17
+
+Fixes found while using 0.4, most of them through WinCraft Assistant.
+
+- **.NET Framework programs run.** Wine Mono, Wine's stand-in for the .NET
+  Framework, is now built in. On 0.4 a program such as KeePass 2 exited
+  without a message: Wine offers to download Wine Mono only while it sets up
+  its Windows folder, which happens when the image is built, and the README
+  was wrong to say otherwise. Programs for .NET 5 and later still need
+  Microsoft's .NET runtime, and say which one.
+- **The assistant no longer runs a web page as an installer.** It downloaded
+  as a web browser, and some sites answer a browser with a download page:
+  asked for VLC, it saved VideoLAN's page as the installer and could not tell
+  why it would not start. It now downloads under its own name, runs only
+  Windows programs and .msi packages, deletes anything else unrun, and says
+  what it got instead.
+- **The assistant shows where each running program's file is**, and reports a
+  program it does not know as such instead of guessing from the name. Wine's
+  `lsass.exe` is no longer listed as a program you started.
+- **The assistant sets a Wine library override for any program name**, such as
+  `notepad++.exe` or `My Game (x86).exe`. It refused some names before, and
+  garbled names with accents.
+
+Tested with Claude Sonnet 5.5 through Anthropic's API: the assistant
+downloaded and started VLC's installer and LibreOffice's .msi package. KeePass
+2.61 runs in a live session with nothing to install.
+
 ## 0.4 — 2026-10-16
 
 - **WinCraft Assistant.** A chat about WinCraft OS and this computer, with
