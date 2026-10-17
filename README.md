@@ -162,6 +162,9 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   debugger) asks first. Ending a program, changing a Wine DLL override,
   setting a value under HKEY_CURRENT_USER and downloading and running an
   installer each ask every time, in a dialog the model cannot answer.
+- **Answers.** Lists and emphasis show as such, and web addresses in an
+  answer are links: clicking one opens it in the web browser you installed,
+  such as Firefox from *Download a Program*.
 - **Reading web pages.** When the answer needs something current, such as a
   program's newest version and its download address, the assistant asks to
   read pages on the internet. The first page of a chat asks you; you can

@@ -5,7 +5,7 @@ WINDRES = x86_64-w64-mingw32-windres
 CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -municode -mwindows -s
 LIBS    = -lwinhttp -lshell32 -lshlwapi -lole32 -luuid -lcomctl32 -lgdi32 -luser32 -ladvapi32 \
           -lws2_32 -liphlpapi
-SRCS    = wcagent.c llm.c tools.c json.c
+SRCS    = wcagent.c llm.c tools.c json.c mdtext.c
 
 all: $(OUT)/wcagent.exe
 

@@ -145,6 +145,19 @@ char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ct
 char *system_snapshot(void);
 char *knowledge_text(void);
 
+/* ---- the model's Markdown, as the chat shows it (mdtext.c) ---- */
+enum { MD_BOLD = 1, MD_ITALIC = 2, MD_MONO = 4, MD_GREY = 8 };
+
+typedef struct md_out md_out;
+struct md_out {
+    /* a paragraph: indents in twips for the chat window, spaces for plain text */
+    void (*begin)(md_out *o, int indent, int hang, int spaces);
+    void (*text)(md_out *o, const char *s, size_t n, int style);
+    void (*end)(md_out *o);
+};
+void md_render(const char *md, md_out *o, int style);
+char *md_plain(const char *md);    /* caller frees */
+
 /* ---- files ---- */
 char *read_file_utf8(const WCHAR *path, size_t max, size_t *len);
 char *read_unix_file(const char *unix_path, size_t max);    /* NULL if missing */

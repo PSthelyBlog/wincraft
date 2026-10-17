@@ -20,6 +20,7 @@
 #include "agent.h"
 #include <windowsx.h>
 #include <commctrl.h>
+#include <richedit.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -54,6 +55,7 @@ int g_provider_port;
 static json *g_messages, *g_tools_json;
 static char *g_system, *g_snapshot;
 static BOOL g_busy, g_diag_allowed, g_web_allowed;   /* "Allow for this chat" */
+static BOOL g_rich;                 /* the chat is a rich edit control, not a plain one */
 static long g_tok_in, g_tok_out;
 static WCHAR g_chat_file[MAX_PATH];
 static WNDPROC g_input_proc;
@@ -617,49 +619,6 @@ static void show_activity(void)
  * ====================================================================== */
 
 /* Models write Markdown; the transcript is plain text. */
-static char *plain_text(const char *md)
-{
-    sb_t b;
-    const char *p = md;
-    BOOL line_start = TRUE;
-
-    sb_init(&b);
-    while (*p) {
-        if (line_start && !strncmp(p, "```", 3)) {          /* code fence lines */
-            while (*p && *p != '\n')
-                p++;
-            if (*p)
-                p++;
-            continue;
-        }
-        if (line_start && *p == '#') {                       /* headings */
-            while (*p == '#')
-                p++;
-            while (*p == ' ')
-                p++;
-            line_start = FALSE;
-            continue;
-        }
-        if (line_start && (p[0] == '*' || p[0] == '-') && p[1] == ' ') {
-            sb_add(&b, "\xe2\x80\xa2 ");                    /* bullet */
-            p += 2;
-            line_start = FALSE;
-            continue;
-        }
-        if ((p[0] == '*' && p[1] == '*') || (p[0] == '_' && p[1] == '_')) {
-            p += 2;
-            continue;
-        }
-        if (*p == '`') {
-            p++;
-            continue;
-        }
-        line_start = *p == '\n';
-        sb_addc(&b, *p++);
-    }
-    return sb_take(&b);
-}
-
 static void chat_file_append(const char *utf8)
 {
     HANDLE h;
@@ -686,8 +645,213 @@ static void transcript_add(const char *utf8)
     chat_file_append(utf8);
 }
 
+/* ---- the chat as rich text ----
+ *
+ * What the model writes is Markdown, shown through md_render (mdtext.c):
+ * lists, bold, italics and code look as such, and the control turns web
+ * addresses into links (see open_link). Labels are bold and look-up lines
+ * grey, so the answers stand out. The saved chat stays plain text. */
+
+enum { CHAT_TEXT, CHAT_QUIET, CHAT_YOU, CHAT_ANSWER };
+
+struct rich_out {
+    md_out o;
+    int style;
+};
+
+static void rich_to_end(void)
+{
+    GETTEXTLENGTHEX gl = { GTL_NUMCHARS | GTL_PRECISE, 1200 };
+    LONG end = (LONG)SendMessageW(g_transcript, EM_GETTEXTLENGTHEX, (WPARAM)&gl, 0);
+    CHARRANGE cr = { end, end };
+
+    SendMessageW(g_transcript, EM_EXSETSEL, 0, (LPARAM)&cr);
+}
+
+static void rich_insert(const WCHAR *w, int style)
+{
+    CHARFORMAT2W cf;
+
+    rich_to_end();
+    ZeroMemory(&cf, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_BOLD | CFM_ITALIC | CFM_COLOR | CFM_FACE | CFM_SIZE;
+    cf.dwEffects = (style & MD_BOLD ? CFE_BOLD : 0) | (style & MD_ITALIC ? CFE_ITALIC : 0) |
+                   (style & MD_GREY ? 0 : CFE_AUTOCOLOR);
+    cf.crTextColor = GetSysColor(COLOR_GRAYTEXT);
+    cf.yHeight = style & MD_MONO ? 190 : 200;              /* twips: 9.5 and 10 points */
+    lstrcpyW(cf.szFaceName, style & MD_MONO ? L"Liberation Mono" : L"Liberation Sans");
+    SendMessageW(g_transcript, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    SendMessageW(g_transcript, EM_REPLACESEL, FALSE, (LPARAM)w);
+}
+
+static void rich_begin(md_out *o, int indent, int hang, int spaces)
+{
+    PARAFORMAT2 pf;
+
+    rich_to_end();
+    ZeroMemory(&pf, sizeof(pf));
+    pf.cbSize = sizeof(pf);
+    pf.dwMask = PFM_STARTINDENT | PFM_OFFSET;
+    pf.dxStartIndent = indent;
+    pf.dxOffset = hang;
+    SendMessageW(g_transcript, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
+}
+
+static void rich_text(md_out *o, const char *s, size_t n, int style)
+{
+    int len = MultiByteToWideChar(CP_UTF8, 0, s, (int)n, NULL, 0);
+    WCHAR *w = malloc((len + 1) * sizeof(WCHAR));
+
+    MultiByteToWideChar(CP_UTF8, 0, s, (int)n, w, len);
+    w[len] = 0;
+    rich_insert(w, style | ((struct rich_out *)o)->style);
+    free(w);
+}
+
+static void rich_end(md_out *o)
+{
+    rich_insert(L"\r", 0);
+}
+
+/* Text taken as it is, one paragraph per line. */
+static void rich_lines(const char *utf8, int style)
+{
+    struct rich_out ro = { { rich_begin, rich_text, rich_end }, style };
+    const char *p = utf8, *e;
+
+    while (*p) {
+        e = strchr(p, '\n');
+        rich_begin(&ro.o, 0, 0, 0);
+        rich_text(&ro.o, p, e ? (size_t)(e - p) : strlen(p), 0);
+        if (!e)
+            break;
+        rich_end(&ro.o);
+        p = e + 1;
+    }
+}
+
+/* Add to the chat, and to the saved chat as plain text. */
+static void chat_add(int kind, const char *utf8)
+{
+    sb_t file;
+    char *plain = NULL;
+
+    sb_init(&file);
+    if (kind == CHAT_ANSWER) {
+        plain = md_plain(utf8);
+        sb_addf(&file, "Assistant:\n%s\n", plain);
+    } else if (kind == CHAT_YOU) {
+        sb_addf(&file, "You:\n%s\n\n", utf8);
+    } else {
+        sb_add(&file, utf8);
+    }
+    if (!g_rich) {
+        transcript_add(file.s);
+    } else {
+        if (kind == CHAT_ANSWER) {
+            struct rich_out ro = { { rich_begin, rich_text, rich_end }, 0 };
+
+            rich_lines("Assistant:\n", MD_BOLD);
+            md_render(utf8, &ro.o, 0);
+            rich_lines("\n", 0);
+        } else if (kind == CHAT_YOU) {
+            rich_lines("You:\n", MD_BOLD);
+            rich_lines(utf8, 0);
+            rich_lines("\n\n", 0);
+        } else {
+            rich_lines(utf8, kind == CHAT_QUIET ? MD_GREY : 0);
+        }
+        SendMessageW(g_transcript, WM_VSCROLL, SB_BOTTOM, 0);
+        chat_file_append(file.s);
+    }
+    sb_free(&file);
+    free(plain);
+}
+
+/* The web browser the person installed: Windows browsers list themselves
+ * under StartMenuInternet. (Wine's own handler for web addresses,
+ * winebrowser, looks for a Linux browser, and WinCraft has none.) */
+static BOOL browser_command(WCHAR *cmd, DWORD size)
+{
+    static const HKEY roots[] = { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
+    WCHAR name[256], key[600];
+    DWORD n, type;
+    unsigned i;
+    HKEY h;
+
+    for (i = 0; i < ARRAYSIZE(roots); i++) {
+        if (RegOpenKeyExW(roots[i], L"Software\\Clients\\StartMenuInternet", 0, KEY_READ, &h))
+            continue;
+        n = sizeof(name) - sizeof(WCHAR);
+        ZeroMemory(name, sizeof(name));
+        if (RegQueryValueExW(h, NULL, NULL, &type, (BYTE *)name, &n) || type != REG_SZ || !name[0]) {
+            n = ARRAYSIZE(name);
+            if (RegEnumKeyExW(h, 0, name, &n, NULL, NULL, NULL, NULL)) {
+                RegCloseKey(h);
+                continue;
+            }
+        }
+        RegCloseKey(h);
+        _snwprintf(key, ARRAYSIZE(key), L"Software\\Clients\\StartMenuInternet\\%s\\shell\\open\\command", name);
+        key[ARRAYSIZE(key) - 1] = 0;
+        if (RegOpenKeyExW(roots[i], key, 0, KEY_READ, &h))
+            continue;
+        n = (size - 1) * sizeof(WCHAR);
+        ZeroMemory(cmd, size * sizeof(WCHAR));
+        if (!RegQueryValueExW(h, NULL, NULL, &type, (BYTE *)cmd, &n) && (type == REG_SZ || type == REG_EXPAND_SZ) &&
+            cmd[0]) {
+            RegCloseKey(h);
+            return TRUE;
+        }
+        RegCloseKey(h);
+    }
+    return FALSE;
+}
+
+/* A web address clicked in the chat. */
+static void open_link(const WCHAR *url)
+{
+    WCHAR cmd[1024], line[4200], full[2100], *arg;
+    const WCHAR *p;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+
+    if (!StrCmpNIW(url, L"www.", 4)) {
+        _snwprintf(full, ARRAYSIZE(full), L"https://%s", url);
+        full[ARRAYSIZE(full) - 1] = 0;
+        url = full;
+    }
+    if (StrCmpNIW(url, L"https://", 8) && StrCmpNIW(url, L"http://", 7))
+        return;                                 /* web addresses only */
+    for (p = url; *p; p++)
+        if (*p <= L' ' || *p == L'"')
+            return;                             /* nothing that could leave the quotes below */
+    if (!browser_command(cmd, ARRAYSIZE(cmd))) {
+        _snwprintf(line, ARRAYSIZE(line), L"There is no web browser on this computer to open\n%s\n\nInstall "
+                   L"Firefox with Download a Program (Get Firefox), then click the address again.", url);
+        line[ARRAYSIZE(line) - 1] = 0;
+        MessageBoxW(g_main, line, APP_NAME, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if ((arg = wcsstr(cmd, L"%1")))             /* a command with a place for the address */
+        _snwprintf(line, ARRAYSIZE(line), L"%.*s%s%s", (int)(arg - cmd), cmd, url, arg + 2);
+    else
+        _snwprintf(line, ARRAYSIZE(line), L"%s \"%s\"", cmd, url);
+    line[ARRAYSIZE(line) - 1] = 0;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    if (CreateProcessW(NULL, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        activity_log("opened a link from the chat: %S", url);
+    } else {
+        MessageBoxW(g_main, L"The web browser could not be started.", APP_NAME, MB_OK | MB_ICONWARNING);
+    }
+}
+
 /* From the worker thread: hand text to the window. */
-static void post_text(const char *fmt, ...)
+static void post_chat(int kind, const char *fmt, ...)
 {
     sb_t b;
     va_list ap;
@@ -704,7 +868,7 @@ static void post_text(const char *fmt, ...)
     sb_init(&b);
     sb_add(&b, buf);
     free(buf);
-    PostMessageW(g_main, WM_APP_APPEND, 0, (LPARAM)sb_take(&b));
+    PostMessageW(g_main, WM_APP_APPEND, (WPARAM)kind, (LPARAM)sb_take(&b));
 }
 
 static void post_status(const WCHAR *s)
@@ -949,9 +1113,9 @@ static DWORD WINAPI chat_thread(void *arg)
         ok = ask_model(&r);
         if (ok <= 0) {
             if (ok < 0)
-                post_text("Stopped.\n\n");
+                post_chat(CHAT_TEXT, "Stopped.\n\n");
             else
-                post_text("%s\n\n", r.error ? r.error : "The request failed.");
+                post_chat(CHAT_TEXT, "%s\n\n", r.error ? r.error : "The request failed.");
             activity_log("request to %S %s: %s", host, ok < 0 ? "stopped" : "failed",
                          ok < 0 ? "by the person" : r.error ? r.error : "?");
             if (step == 0) {
@@ -979,12 +1143,8 @@ static DWORD WINAPI chat_thread(void *arg)
         r.turn = NULL;
         g_tok_in += r.in_tokens;
         g_tok_out += r.out_tokens;
-        if (r.text) {
-            char *plain = plain_text(r.text);
-
-            post_text("Assistant:\n%s\n\n", plain);
-            free(plain);
-        }
+        if (r.text)
+            post_chat(CHAT_ANSWER, "%s", r.text);
         if (!r.ncalls) {
             llm_reply_free(&r);
             break;
@@ -1000,7 +1160,7 @@ static DWORD WINAPI chat_thread(void *arg)
             } else if (t->tier == TIER_WEB && !g_cfg.web_pages) {
                 results[i] = utf8_dup("Reading web pages is switched off in this assistant's settings, so nothing "
                                       "was read. The person can switch it on under Chat > Settings.");
-                post_text("  \xc2\xb7 Reading web pages is switched off in the settings\n");
+                post_chat(CHAT_QUIET, "  \xc2\xb7 Reading web pages is switched off in the settings\n");
             } else {
                 WCHAR status[128];
 
@@ -1008,25 +1168,25 @@ static DWORD WINAPI chat_thread(void *arg)
                 status[ARRAYSIZE(status) - 1] = 0;
                 post_status(status);
                 results[i] = tool_run(t, r.calls[i].input, approve_cb, NULL, &label);
-                post_text("  \xc2\xb7 %s\n", label);
+                post_chat(CHAT_QUIET, "  \xc2\xb7 %s\n", label);
                 free(label);
             }
             activity_log("tool %s %.300s -> %u bytes to %S", r.calls[i].name, args,
                          (unsigned)strlen(results[i]), host);
             free(args);
         }
-        post_text("\n");
+        post_chat(CHAT_TEXT, "\n");
         llm_add_results(&g_cfg, g_messages, &r, results);
         for (i = 0; i < r.ncalls; i++)
             free(results[i]);
         llm_reply_free(&r);
         if (llm_cancelled()) {
-            post_text("Stopped.\n\n");
+            post_chat(CHAT_TEXT, "Stopped.\n\n");
             close_turn("(Stopped by the person.)");
             break;
         }
         if (step == MAX_STEPS - 1) {
-            post_text("(The assistant stopped here: it used %d steps for this question.)\n\n", MAX_STEPS);
+            post_chat(CHAT_TEXT, "(The assistant stopped here: it used %d steps for this question.)\n\n", MAX_STEPS);
             close_turn("(Stopped after too many steps.)");
         }
     }
@@ -1068,7 +1228,7 @@ static void new_chat(void)
                  "responding, what is installed, how something works here. The assistant looks things "
                  "up on this computer as it goes and lists what it looked at. It changes nothing "
                  "without asking you first.\n\nModel: %.120S at %.120S\n\n", g_cfg.model, host);
-        transcript_add(intro);
+        chat_add(CHAT_QUIET, intro);
     }
     update_status();
 }
@@ -1077,7 +1237,7 @@ static void send_question(void)
 {
     int len = GetWindowTextLengthW(g_input);
     WCHAR *w;
-    char *q, *line;
+    char *q;
     HANDLE t;
 
     if (g_busy || !len)
@@ -1092,10 +1252,7 @@ static void send_question(void)
     q = utf8_from_w(w);
     free(w);
     SetWindowTextW(g_input, L"");
-    line = malloc(strlen(q) + 16);
-    sprintf(line, "You:\n%s\n\n", q);
-    transcript_add(line);
-    free(line);
+    chat_add(CHAT_YOU, q);
     g_busy = TRUE;
     EnableWindow(g_send, FALSE);
     EnableWindow(g_stop, TRUE);
@@ -1168,9 +1325,15 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
         SetMenu(hwnd, bar);
 
-        g_transcript = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-                                       ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
-                                       (HMENU)IDC_TRANSCRIPT, g_inst, NULL);
+        if (LoadLibraryW(L"msftedit.dll"))
+            g_transcript = CreateWindowExW(WS_EX_CLIENTEDGE, L"RICHEDIT50W", L"", WS_CHILD | WS_VISIBLE |
+                                           WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
+                                           hwnd, (HMENU)IDC_TRANSCRIPT, g_inst, NULL);
+        g_rich = g_transcript != NULL;
+        if (!g_rich)
+            g_transcript = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                                           ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
+                                           (HMENU)IDC_TRANSCRIPT, g_inst, NULL);
         g_input = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP |
                                   ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 10, 10, hwnd,
                                   (HMENU)IDC_INPUT, g_inst, NULL);
@@ -1186,6 +1349,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SendMessageW(g_stop, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(g_status, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(g_transcript, EM_SETLIMITTEXT, 16 << 20, 0);
+        if (g_rich) {
+            SendMessageW(g_transcript, EM_EXLIMITTEXT, 0, 16 << 20);
+            SendMessageW(g_transcript, EM_SETBKGNDCOLOR, 0, GetSysColor(COLOR_WINDOW));
+            SendMessageW(g_transcript, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(4, 4));
+            SendMessageW(g_transcript, EM_AUTOURLDETECT, TRUE, 0);
+            SendMessageW(g_transcript, EM_SETEVENTMASK, 0, ENM_LINK);
+        }
         g_input_proc = (WNDPROC)SetWindowLongPtrW(g_input, GWLP_WNDPROC, (LONG_PTR)input_proc);
         return 0;
     }
@@ -1244,9 +1414,29 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_APP_APPEND:
-        transcript_add((const char *)lp);
+        chat_add((int)wp, (const char *)lp);
         free((void *)lp);
         return 0;
+    case WM_NOTIFY: {
+        ENLINK *link = (ENLINK *)lp;
+
+        if (link->nmhdr.idFrom == IDC_TRANSCRIPT && link->nmhdr.code == EN_LINK && link->msg == WM_LBUTTONUP) {
+            CHARRANGE sel;
+            WCHAR url[2048];
+            TEXTRANGEW tr;
+
+            /* a click, not the end of selecting text */
+            SendMessageW(g_transcript, EM_EXGETSEL, 0, (LPARAM)&sel);
+            if (sel.cpMin == sel.cpMax && link->chrg.cpMax - link->chrg.cpMin < (LONG)ARRAYSIZE(url)) {
+                tr.chrg = link->chrg;
+                tr.lpstrText = url;
+                SendMessageW(g_transcript, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
+                open_link(url);
+            }
+            return 1;
+        }
+        break;
+    }
     case WM_APP_STATUS:
         SetWindowTextW(g_status, (const WCHAR *)lp);
         free((void *)lp);
