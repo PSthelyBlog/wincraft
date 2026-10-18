@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.4 — 2026-10-18
+
+A security fix for the WinCraft Agent's sandbox.
+
+- **The kernel's settings are out of the sandbox's reach.** In 0.7 to
+  0.7.3 the sandbox shared `/proc/sys` with the computer, and its root
+  could change kernel settings of the running system, which the
+  capabilities it lacks did not cover. Testing a feature that names the
+  computer, the agent renamed the running computer for a moment, then
+  named it back. Now each command in the sandbox has its own computer name,
+  `/proc/sys` and the other kernel setting areas are read-only, and the
+  `/proc` files that act on the machine are masked; if any of that cannot
+  be set up, the command does not run.
+- The agent's rules say that a kernel setting cannot take effect in the
+  sandbox, so a hook that changes one has to be checked another way.
+- Everything else is as in 0.7.3.
+
 ## 0.7.3 — 2026-10-18
 
 WinCraft Assistant sees WinCraft's own services, and the clock as it is.
