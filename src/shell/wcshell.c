@@ -78,6 +78,12 @@ static HFONT g_font, g_font_bold, g_font_small, g_font_large;
 static int g_sw, g_sh;
 static int g_bar_h = 44;     /* WINCRAFT_TASKBAR: must match the session's work area */
 static HHOOK g_kbd_hook;
+/* "Install WinCraft OS" is for a session started from the installation
+   medium; on an installed system its shortcuts are not shown. */
+static BOOL g_hide_installer;
+#define INSTALLER_LINK  L"Install WinCraft OS.lnk"
+
+static BOOL read_native_file(const WCHAR *unix_path, char *buf, DWORD size);
 
 /* ======================================================================
  * Drawing helpers
@@ -173,6 +179,25 @@ static void draw_logo(HDC dc, int x, int y, int size, COLORREF bg)
     SelectObject(mem, old);
     DeleteObject(bmp);
     DeleteDC(mem);
+}
+
+/* A small arrow centred on (x, y): pointing right when closed, down when open. */
+static void draw_chevron(HDC dc, int x, int y, BOOL open, COLORREF color)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, color);
+    HGDIOBJ old = SelectObject(dc, pen);
+
+    if (open) {
+        MoveToEx(dc, x - 5, y - 2, NULL);
+        LineTo(dc, x, y + 3);
+        LineTo(dc, x + 6, y - 3);
+    } else {
+        MoveToEx(dc, x - 2, y - 5, NULL);
+        LineTo(dc, x + 3, y);
+        LineTo(dc, x - 3, y + 6);
+    }
+    SelectObject(dc, old);
+    DeleteObject(pen);
 }
 
 static HICON extract_icon(const WCHAR *file, int index, int size)
@@ -527,7 +552,8 @@ static DWORD scan_desktop(struct icon_item **out, int *count)
             const WCHAR *p;
 
             if (fd.cFileName[0] == L'.' || !lstrcmpiW(fd.cFileName, L"desktop.ini") ||
-                (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))
+                (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) ||
+                (g_hide_installer && !lstrcmpiW(fd.cFileName, INSTALLER_LINK)))
                 continue;
             for (p = fd.cFileName; *p; p++)
                 stamp = stamp * 31 + *p;
@@ -752,13 +778,27 @@ static LRESULT CALLBACK desktop_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 struct app {
     WCHAR path[MAX_PATH];
     WCHAR name[96];
+    WCHAR group[96];        /* the Programs folder it is in; "" at the top */
     HICON icon;
     BOOL icon_tried;
 };
 
+/* A Programs folder holding several programs, as installers that add more
+   than one shortcut make: one row, which opens to show them. A folder with a
+   single program shows just the program. */
+struct group {
+    WCHAR name[96];
+    int count;
+    BOOL open;
+};
+
 static struct app *g_apps;
 static int g_napps, g_apps_cap;
-static int *g_view, g_nview;            /* indices into g_apps after filtering */
+static struct group g_groups[64];
+static int g_ngroups;
+static HICON g_folder_icon;
+/* the rows shown: an index into g_apps, or -1 - an index into g_groups */
+static int *g_view, g_nview;
 static int g_menu_sel, g_menu_scroll, g_menu_btn = -1, g_menu_h;
 static WCHAR g_filter[64];
 static const WCHAR *g_menu_buttons[] = { L"Run...", L"Restart", L"Shut down" };
@@ -768,7 +808,7 @@ static int __cdecl app_cmp(const void *a, const void *b)
     return lstrcmpiW(((const struct app *)a)->name, ((const struct app *)b)->name);
 }
 
-static void scan_programs(const WCHAR *dir, int depth)
+static void scan_programs(const WCHAR *dir, const WCHAR *group, int depth)
 {
     WCHAR pattern[MAX_PATH];
     WIN32_FIND_DATAW fd;
@@ -787,14 +827,16 @@ static void scan_programs(const WCHAR *dir, int depth)
             continue;
         PathCombineW(path, dir, fd.cFileName);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            /* what lies deeper belongs to the first-level folder */
             if (depth < 4 && lstrcmpiW(fd.cFileName, L"StartUp"))
-                scan_programs(path, depth + 1);
+                scan_programs(path, depth ? group : fd.cFileName, depth + 1);
             continue;
         }
         ext = PathFindExtensionW(fd.cFileName);
         if (lstrcmpiW(ext, L".lnk") && lstrcmpiW(ext, L".url") && lstrcmpiW(ext, L".exe"))
             continue;
-        if (!StrCmpNIW(fd.cFileName, L"Uninstall", 9))
+        if (!StrCmpNIW(fd.cFileName, L"Uninstall", 9) ||
+            (g_hide_installer && !lstrcmpiW(fd.cFileName, INSTALLER_LINK)))
             continue;
         if (g_napps == g_apps_cap) {
             g_apps_cap = g_apps_cap ? g_apps_cap * 2 : 64;
@@ -807,8 +849,9 @@ static void scan_programs(const WCHAR *dir, int depth)
         lstrcpynW(a->path, path, MAX_PATH);
         lstrcpynW(a->name, fd.cFileName, ARRAYSIZE(a->name));
         *PathFindExtensionW(a->name) = 0;
+        lstrcpynW(a->group, group, ARRAYSIZE(a->group));
         for (i = 0; i < g_napps; i++)       /* per-user entry hides the common one */
-            if (!lstrcmpiW(g_apps[i].name, a->name))
+            if (!lstrcmpiW(g_apps[i].name, a->name) && !lstrcmpiW(g_apps[i].group, a->group))
                 break;
         if (i == g_napps)
             g_napps++;
@@ -816,14 +859,65 @@ static void scan_programs(const WCHAR *dir, int depth)
     FindClose(h);
 }
 
-static void apply_filter(void)
+static int group_index(const WCHAR *name)
 {
     int i;
 
+    for (i = 0; i < g_ngroups; i++)
+        if (!lstrcmpiW(g_groups[i].name, name))
+            return i;
+    return -1;
+}
+
+struct row {
+    const WCHAR *name;
+    int code;               /* as in g_view */
+};
+
+static int __cdecl row_cmp(const void *a, const void *b)
+{
+    return lstrcmpiW(((const struct row *)a)->name, ((const struct row *)b)->name);
+}
+
+/* Programs and folders by name, an open folder's programs under it; while
+   searching, every matching program, wherever it is. */
+static void build_view(void)
+{
+    struct row *top;
+    int i, j, n = 0;
+
     g_nview = 0;
+    if (g_filter[0]) {
+        for (i = 0; i < g_napps; i++)
+            if (StrStrIW(g_apps[i].name, g_filter))
+                g_view[g_nview++] = i;
+        return;
+    }
+    top = HeapAlloc(GetProcessHeap(), 0, (g_napps + g_ngroups + 1) * sizeof(*top));
     for (i = 0; i < g_napps; i++)
-        if (!g_filter[0] || StrStrIW(g_apps[i].name, g_filter))
-            g_view[g_nview++] = i;
+        if (!g_apps[i].group[0]) {
+            top[n].name = g_apps[i].name;
+            top[n++].code = i;
+        }
+    for (i = 0; i < g_ngroups; i++)
+        if (g_groups[i].count > 1) {
+            top[n].name = g_groups[i].name;
+            top[n++].code = -1 - i;
+        }
+    qsort(top, n, sizeof(*top), row_cmp);
+    for (j = 0; j < n; j++) {
+        g_view[g_nview++] = top[j].code;
+        if (top[j].code < 0 && g_groups[-1 - top[j].code].open)
+            for (i = 0; i < g_napps; i++)           /* g_apps is sorted by name */
+                if (!lstrcmpiW(g_apps[i].group, g_groups[-1 - top[j].code].name))
+                    g_view[g_nview++] = i;
+    }
+    HeapFree(GetProcessHeap(), 0, top);
+}
+
+static void apply_filter(void)
+{
+    build_view();
     g_menu_sel = g_nview ? 0 : -1;
     g_menu_scroll = 0;
 }
@@ -841,12 +935,39 @@ static void load_programs(void)
     g_napps = 0;
     for (f = 0; f < ARRAYSIZE(folders); f++)
         if (SUCCEEDED(SHGetFolderPathW(NULL, folders[f], NULL, SHGFP_TYPE_CURRENT, dir)))
-            scan_programs(dir, 0);
+            scan_programs(dir, L"", 0);
     if (g_napps)
         qsort(g_apps, g_napps, sizeof(*g_apps), app_cmp);
+    g_ngroups = 0;
+    for (i = 0; i < g_napps; i++) {
+        int g;
+
+        if (!g_apps[i].group[0])
+            continue;
+        g = group_index(g_apps[i].group);
+        if (g < 0 && g_ngroups < (int)ARRAYSIZE(g_groups)) {
+            g = g_ngroups++;
+            lstrcpynW(g_groups[g].name, g_apps[i].group, ARRAYSIZE(g_groups[g].name));
+            g_groups[g].count = 0;
+            g_groups[g].open = FALSE;
+        }
+        if (g >= 0)
+            g_groups[g].count++;
+    }
+    for (i = 0; i < g_napps; i++) {         /* a folder of one is no folder */
+        int g = g_apps[i].group[0] ? group_index(g_apps[i].group) : -1;
+
+        if (g < 0 || g_groups[g].count < 2)
+            g_apps[i].group[0] = 0;
+    }
+    if (!g_folder_icon) {
+        GetSystemDirectoryW(dir, MAX_PATH);
+        PathAppendW(dir, L"shell32.dll");
+        g_folder_icon = extract_icon(dir, -4, 32);
+    }
     if (g_view)
         HeapFree(GetProcessHeap(), 0, g_view);
-    g_view = HeapAlloc(GetProcessHeap(), 0, (g_napps + 1) * sizeof(int));
+    g_view = HeapAlloc(GetProcessHeap(), 0, (g_napps + g_ngroups + 1) * sizeof(int));
     g_filter[0] = 0;
     apply_filter();
 }
@@ -913,7 +1034,9 @@ static void paint_menu(HWND hwnd)
     SelectClipRgn(mem, clip);
     first = g_menu_scroll / MENU_ROW;
     for (i = first; i < g_nview; i++) {
-        struct app *a = &g_apps[g_view[i]];
+        const WCHAR *name;
+        HICON icon;
+        int indent = 0;
 
         y = MENU_HEADER + i * MENU_ROW - g_menu_scroll;
         if (y >= list.bottom)
@@ -922,14 +1045,28 @@ static void paint_menu(HWND hwnd)
             fill_xywh(mem, 6, y + 2, MENU_W - 12, MENU_ROW - 4, C_ACTIVE);
             fill_xywh(mem, 6, y + 10, 3, MENU_ROW - 20, C_ACCENT);
         }
-        if (!a->icon_tried) {
-            a->icon = file_icon(a->path, 32);
-            a->icon_tried = TRUE;
+        if (g_view[i] < 0) {
+            struct group *g = &g_groups[-1 - g_view[i]];
+
+            name = g->name;
+            icon = g_folder_icon;
+            draw_chevron(mem, MENU_W - 34, y + MENU_ROW / 2, g->open, C_DIM);
+        } else {
+            struct app *a = &g_apps[g_view[i]];
+
+            if (!a->icon_tried) {
+                a->icon = file_icon(a->path, 32);
+                a->icon_tried = TRUE;
+            }
+            name = a->name;
+            icon = a->icon;
+            if (a->group[0] && !g_filter[0])
+                indent = 28;
         }
-        if (a->icon)
-            DrawIconEx(mem, 20, y + (MENU_ROW - 32) / 2, a->icon, 32, 32, 0, NULL, DI_NORMAL);
-        SetRect(&rc, 66, y, MENU_W - 20, y + MENU_ROW);
-        text(mem, a->name, &rc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, g_font, C_TEXT);
+        if (icon)
+            DrawIconEx(mem, 20 + indent, y + (MENU_ROW - 32) / 2, icon, 32, 32, 0, NULL, DI_NORMAL);
+        SetRect(&rc, 66 + indent, y, MENU_W - (g_view[i] < 0 ? 48 : 20), y + MENU_ROW);
+        text(mem, name, &rc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, g_font, C_TEXT);
     }
     if (!g_nview) {
         SetRect(&rc, 0, MENU_HEADER + 24, MENU_W, MENU_HEADER + 60);
@@ -992,12 +1129,36 @@ static void show_menu(void)
     InvalidateRect(g_bar, NULL, FALSE);
 }
 
+/* Open (1), close (0) or toggle (-1) the folder on a row; it stays selected. */
+static void menu_open_group(int row, int open)
+{
+    struct group *g = &g_groups[-1 - g_view[row]];
+
+    if (open < 0)
+        open = !g->open;
+    if (g->open == open)
+        return;
+    g->open = open;
+    build_view();
+    if (open) {                     /* bring its programs into view */
+        g_menu_sel = min(g_nview - 1, row + g->count);
+        menu_ensure_visible();
+    }
+    g_menu_sel = row;
+    menu_ensure_visible();
+    InvalidateRect(g_menu, NULL, FALSE);
+}
+
 static void menu_launch(int view_index)
 {
     WCHAR path[MAX_PATH];
 
     if (view_index < 0 || view_index >= g_nview)
         return;
+    if (g_view[view_index] < 0) {
+        menu_open_group(view_index, -1);
+        return;
+    }
     lstrcpynW(path, g_apps[g_view[view_index]].path, MAX_PATH);
     hide_menu();
     open_path(path, NULL);
@@ -1087,6 +1248,20 @@ static LRESULT CALLBACK menu_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             break;
         case VK_RETURN: menu_launch(g_menu_sel); return 0;
+        case VK_RIGHT:
+            if (g_menu_sel >= 0 && g_view[g_menu_sel] < 0)
+                menu_open_group(g_menu_sel, 1);
+            return 0;
+        case VK_LEFT:                   /* close the folder, from inside it too */
+            if (g_filter[0] || g_menu_sel < 0)
+                return 0;
+            if (g_view[g_menu_sel] >= 0 && g_apps[g_view[g_menu_sel]].group[0]) {
+                while (g_menu_sel > 0 && g_view[g_menu_sel] >= 0)
+                    g_menu_sel--;
+            }
+            if (g_view[g_menu_sel] < 0)
+                menu_open_group(g_menu_sel, 0);
+            return 0;
         case VK_DOWN:   if (g_menu_sel < g_nview - 1) g_menu_sel++; break;
         case VK_UP:     if (g_menu_sel > 0) g_menu_sel--; break;
         case VK_NEXT:   g_menu_sel = min(g_nview - 1, g_menu_sel + page); break;
@@ -1771,12 +1946,13 @@ static int download_tool(HINSTANCE inst)
  * It only chooses a disk and shows progress; the work is done by the system.
  * ====================================================================== */
 
-enum { IDC_DISKS = 300, IDC_INSTALL, IDC_INSTALL_STATUS };
+enum { IDC_DISKS = 300, IDC_INSTALL, IDC_INSTALL_STATUS, IDC_SPACE, IDC_SPACE_NOTE, IDC_DATA_NAME };
 #define UNIX_ROOT L"\\\\?\\unix"
 
 struct disk {
     WCHAR name[32];
     WCHAR label[160];
+    unsigned gb;            /* size in GB of 10^9 bytes, as shown */
 };
 
 static struct disk g_disks[16];
@@ -1834,8 +2010,8 @@ static void list_disks(void)
         wsprintfW(path, L"/sys/block/%s/device/model", fd.cFileName);
         read_native_file(path, model, sizeof(model));
         lstrcpynW(d->name, fd.cFileName, ARRAYSIZE(d->name));
-        wsprintfW(d->label, L"%s   -   %S   -   %u GB", fd.cFileName,
-                  model[0] ? model : "disk", (unsigned)(sectors * 512 / 1000000000ULL));
+        d->gb = (unsigned)(sectors * 512 / 1000000000ULL);
+        wsprintfW(d->label, L"%s   -   %S   -   %u GB", fd.cFileName, model[0] ? model : "disk", d->gb);
         g_ndisks++;
     } while (g_ndisks < (int)ARRAYSIZE(g_disks) && FindNextFileW(h, &fd));
     FindClose(h);
@@ -1845,29 +2021,66 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_DISKS && HIWORD(wp) == LBN_SELCHANGE) {
+            int sel = (int)SendDlgItemMessageW(hwnd, IDC_DISKS, LB_GETCURSEL, 0, 0);
+            WCHAR text[96];
+
+            if (sel >= 0 && sel < g_ndisks) {      /* the whole disk, unless told otherwise */
+                SetDlgItemInt(hwnd, IDC_SPACE, g_disks[sel].gb, FALSE);
+                wsprintfW(text, L"GB of %u GB. The rest of the disk stays empty.", g_disks[sel].gb);
+                SetDlgItemTextW(hwnd, IDC_SPACE_NOTE, text);
+            }
+            return 0;
+        }
         if (LOWORD(wp) == IDC_INSTALL && !g_installing) {
             int sel = (int)SendDlgItemMessageW(hwnd, IDC_DISKS, LB_GETCURSEL, 0, 0);
-            WCHAR text[512];
+            WCHAR text[640], data_name[24], space_text[96];
+            unsigned gb, mib;
+            BOOL ok;
+            int i;
 
             if (sel < 0 || sel >= g_ndisks) {
                 SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"Choose the disk to install to.");
                 return 0;
             }
-            wsprintfW(text, L"Install WinCraft OS on this disk?\n\n%s\n\n"
-                      L"EVERYTHING on this disk will be erased: all partitions, any "
+            gb = GetDlgItemInt(hwnd, IDC_SPACE, &ok, FALSE);
+            if (!ok || gb < 5 || gb > g_disks[sel].gb) {
+                wsprintfW(text, L"The space for WinCraft must be between 5 and %u GB.", g_disks[sel].gb);
+                SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, text);
+                return 0;
+            }
+            GetDlgItemTextW(hwnd, IDC_DATA_NAME, data_name, ARRAYSIZE(data_name));
+            for (i = 0; data_name[i]; i++)
+                if (!iswalnum(data_name[i]) || data_name[i] > 127)
+                    if (data_name[i] != L'-' && data_name[i] != L'_')
+                        break;
+            if (!data_name[0] || data_name[i] || i > 16) {
+                SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"The partition name may use letters, digits, - "
+                                L"and _, 16 at most.");
+                return 0;
+            }
+            /* all of the disk, or that many GB of 10^9 bytes */
+            mib = gb >= g_disks[sel].gb ? 0 : (unsigned)((unsigned long long)gb * 1000000000ULL / 1048576);
+            if (mib)
+                wsprintfW(space_text, L"WinCraft takes %u GB of it; the rest stays empty.", gb);
+            else
+                lstrcpyW(space_text, L"WinCraft takes all of it.");
+            wsprintfW(text, L"Install WinCraft OS on this disk?\n\n%s\n\n%s Its data partition is "
+                      L"named %s.\n\nEVERYTHING on this disk will be erased: all partitions, any "
                       L"operating system and all files. This cannot be undone.",
-                      g_disks[sel].label);
+                      g_disks[sel].label, space_text, data_name);
             if (MessageBoxW(hwnd, text, L"Erase disk and install",
                             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
                 return 0;
-            wsprintfW(text, L"/usr/bin/wcctl priv install %s", g_disks[sel].name);
+            wsprintfW(text, L"/usr/bin/wcctl priv install %s %u %s", g_disks[sel].name, mib, data_name);
             if (!run_native(text, FALSE)) {
                 SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"The system service did not respond.");
                 return 0;
             }
             g_installing = TRUE;
-            EnableWindow(GetDlgItem(hwnd, IDC_INSTALL), FALSE);
-            EnableWindow(GetDlgItem(hwnd, IDC_DISKS), FALSE);
+            for (i = IDC_DISKS; i <= IDC_DATA_NAME; i++)
+                if (i != IDC_INSTALL_STATUS && i != IDC_SPACE_NOTE)
+                    EnableWindow(GetDlgItem(hwnd, i), FALSE);
             SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"Starting...");
             SetTimer(hwnd, 1, 700, NULL);
         } else if (LOWORD(wp) == IDCANCEL) {
@@ -1877,6 +2090,7 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER: {
         char buf[2048], *line;
         WCHAR text[300];
+        int i;
 
         if (!read_native_file(L"/run/wincraft/install.status", buf, sizeof(buf)) || !buf[0])
             return 0;
@@ -1886,8 +2100,11 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, 1);
             g_installing = FALSE;
             SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"WinCraft OS is installed.");
-            if (MessageBoxW(hwnd, L"WinCraft OS is installed.\n\nRemove the installation medium, "
-                            L"then restart to start from the disk.\n\nRestart now?",
+            if (MessageBoxW(hwnd, L"WinCraft OS is installed. Restart now to start it from the "
+                            L"disk?\n\nAn installation CD is ejected as the computer restarts. A USB "
+                            L"stick can stay in: WinCraft starts from the disk it is installed on. "
+                            L"If the computer starts the stick again, remove it or choose the disk "
+                            L"in the computer's boot menu.",
                             L"Installation complete", MB_YESNO | MB_ICONINFORMATION) == IDYES)
                 run_native(L"/usr/lib/wincraft/end-session reboot", FALSE);
             DestroyWindow(hwnd);
@@ -1896,8 +2113,8 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_installing = FALSE;
             wsprintfW(text, L"Installation failed: %S", line + 7);
             SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, text);
-            EnableWindow(GetDlgItem(hwnd, IDC_INSTALL), TRUE);
-            EnableWindow(GetDlgItem(hwnd, IDC_DISKS), TRUE);
+            for (i = IDC_DISKS; i <= IDC_DATA_NAME; i++)
+                EnableWindow(GetDlgItem(hwnd, i), TRUE);
         } else {
             wsprintfW(text, L"%S...", line);
             SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, text);
@@ -1926,7 +2143,7 @@ static int install_tool(HINSTANCE inst)
         L"programs and files are kept between sessions.\n\nThe disk you choose is erased "
         L"completely.";
     WNDCLASSEXW wc;
-    RECT rc = { 0, 0, 520, 300 };
+    RECT rc = { 0, 0, 520, 368 };
     char probe[8];
     HFONT font;
     HWND hwnd, ctl;
@@ -1965,9 +2182,14 @@ static int install_tool(HINSTANCE inst)
             { L"STATIC", intro, 0, 16, 14, 488, 70, 0 },
             { L"STATIC", L"Install to:", 0, 16, 90, 200, 18, 0 },
             { L"LISTBOX", L"", WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY, 16, 110, 488, 96, IDC_DISKS },
-            { L"STATIC", g_ndisks ? L"" : L"No disk of at least 4 GB was found.", 0, 16, 214, 488, 34, IDC_INSTALL_STATUS },
-            { L"BUTTON", L"Erase disk and install", WS_TABSTOP, 250, 256, 166, 30, IDC_INSTALL },
-            { L"BUTTON", L"Close", WS_TABSTOP, 424, 256, 80, 30, IDCANCEL },
+            { L"STATIC", L"Space for WinCraft:", 0, 16, 222, 132, 18, 0 },
+            { L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_NUMBER, 150, 218, 56, 22, IDC_SPACE },
+            { L"STATIC", L"GB", 0, 214, 222, 290, 18, IDC_SPACE_NOTE },
+            { L"STATIC", L"Data partition name:", 0, 16, 254, 132, 18, 0 },
+            { L"EDIT", L"WINCRAFT_DATA", WS_BORDER | WS_TABSTOP, 150, 250, 160, 22, IDC_DATA_NAME },
+            { L"STATIC", g_ndisks ? L"" : L"No disk of at least 4 GB was found.", 0, 16, 284, 488, 34, IDC_INSTALL_STATUS },
+            { L"BUTTON", L"Erase disk and install", WS_TABSTOP, 250, 324, 166, 30, IDC_INSTALL },
+            { L"BUTTON", L"Close", WS_TABSTOP, 424, 324, 80, 30, IDCANCEL },
         };
 
         for (i = 0; i < (int)ARRAYSIZE(items); i++) {
@@ -1979,6 +2201,11 @@ static int install_tool(HINSTANCE inst)
     }
     for (i = 0; i < g_ndisks; i++)
         SendDlgItemMessageW(hwnd, IDC_DISKS, LB_ADDSTRING, 0, (LPARAM)g_disks[i].label);
+    SendDlgItemMessageW(hwnd, IDC_DATA_NAME, EM_LIMITTEXT, 16, 0);
+    if (g_ndisks == 1) {            /* the only choice; the confirmation still asks */
+        SendDlgItemMessageW(hwnd, IDC_DISKS, LB_SETCURSEL, 0, 0);
+        SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_DISKS, LBN_SELCHANGE), 0);
+    }
     EnableWindow(GetDlgItem(hwnd, IDC_INSTALL), g_ndisks > 0);
     ShowWindow(hwnd, SW_SHOW);
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
@@ -2152,6 +2379,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
         if (GetEnvironmentVariableW(L"WINCRAFT_TASKBAR", buf, ARRAYSIZE(buf)) &&
             (h = StrToIntW(buf)) >= 32 && h <= 96)
             g_bar_h = h;
+    }
+    {
+        char probe[8];
+
+        g_hide_installer = !read_native_file(L"/run/wincraft/live", probe, sizeof(probe));
     }
     g_font = make_font(10, FW_NORMAL);
     g_font_bold = make_font(10, FW_SEMIBOLD);

@@ -16,18 +16,24 @@ grep -q '^wincraft / overlay ' /proc/mounts &&
     ! grep -q ' /live/data ' /proc/mounts && : > /run/wincraft/live
 
 # Boot options (see README): wc.shell, wc.kbd=<layout>
+shell= serial=
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         wc.kbd=*)  echo "${arg#wc.kbd=}" > /run/wincraft/kbd ;;
-        wc.shell)
-            # Root shells for rescue and development, only when asked for
-            # on the kernel command line.
-            echo "tty2 respawn exec getty -n -l /bin/sh 38400 tty2 linux" >> /run/wincraft/services
-            grep -q 'console=ttyS0' /proc/cmdline &&
-                echo "ttyS0 respawn exec getty -n -l /bin/sh -L 115200 ttyS0 vt100" >> /run/wincraft/services
-            ;;
+        wc.shell)  shell=1 ;;
+        console=ttyS0*) serial=1 ;;
     esac
 done
+# A virtual machine started for development (./wc run --shell) asks for the
+# same shells with an SMBIOS OEM string from its host, so that it can boot
+# through its own boot menu like any computer.
+grep -q -a 'wincraft\.shell' /sys/firmware/dmi/tables/DMI 2>/dev/null && shell=1 serial=1
+if [ -n "$shell" ]; then
+    # Root shells for rescue and development, only when asked for.
+    echo "tty2 respawn exec getty -n -l /bin/sh 38400 tty2 linux" >> /run/wincraft/services
+    [ -n "$serial" ] &&
+        echo "ttyS0 respawn exec getty -n -l /bin/sh -L 115200 ttyS0 vt100" >> /run/wincraft/services
+fi
 
 sysctl -q -p /etc/sysctl.conf
 

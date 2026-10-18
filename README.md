@@ -81,10 +81,13 @@ Verified in QEMU, booting the ISO, unless noted:
 - Boot via Limine on **BIOS** and on **UEFI** (OVMF), to the desktop.
 - Desktop shell: Start menu with type-to-search, taskbar with running
   windows, minimise / maximise / restore, drag, Run dialog (Win+R), context
-  menus, Windows key, clock.
+  menus, Windows key, clock. A program that installs several shortcuts in
+  its own folder gets one folder entry in the Start menu, which opens in
+  place; search still finds what is inside.
 - Networking: wired, DHCP, DNS; HTTPS with certificate validation.
 - **Install to disk**, boot from the installed disk (BIOS), files persisting
-  across reboots.
+  across reboots. After the installation the computer starts the disk even
+  with the installation ISO still attached.
 - Shut down and restart from the Start menu.
 - Third-party software (tested in the native desktop session, `./wc desktop`):
   the **7-Zip** installer downloaded with *Download a Program*, installed,
@@ -114,11 +117,14 @@ Be clear-eyed about these before you depend on it:
   Most desktop applications and a large share of games work; kernel drivers,
   kernel-level anti-cheat and DRM, UWP/Store apps and some copy protection do
   not. Check a program at <https://appdb.winehq.org>.
-- **No GPU acceleration to speak of.** Everything tested so far is
-  software-rendered (OpenGL through llvmpipe): fine for applications, far too
-  slow for modern 3D games. Intel graphics have a kernel driver and may be
-  accelerated, but that is untested; AMD and NVIDIA cards run unaccelerated on
-  the firmware framebuffer. There is no Vulkan (so no Direct3D 12).
+- **Little GPU acceleration.** In a virtual machine with a virtio GPU and
+  virgl, as `./wc run` starts it, the guest's OpenGL (which Wine also uses for
+  Direct3D) runs on the host's graphics card; games are untested there. On
+  real hardware everything tested so far is software-rendered (OpenGL
+  through llvmpipe): fine for applications, far too slow for modern 3D games.
+  Intel graphics have a kernel driver and may be accelerated, but that is
+  untested; AMD and NVIDIA cards run unaccelerated on the firmware
+  framebuffer. There is no Vulkan (so no Direct3D 12).
 - **No Wi-Fi, no Bluetooth.** Both need firmware blobs and supporting
   services that are not in the image. Wired Ethernet only.
 - **No web browser included.** Use *Download a Program* → *Get Firefox*, and
@@ -198,6 +204,17 @@ After [building](#build-it), the same ISO is in `out/`:
 `./wc run` shares the clipboard with the VM (text only): `wcclip` in the
 guest keeps QEMU's clipboard channel and the desktop's clipboard in step.
 
+The window's graphics adapter is a virtio GPU with 3D acceleration (virgl),
+drawn by your graphics card through its render node (`/dev/dri/renderD*`).
+The guest takes the size of the window when it starts; resizing the window
+later scales the picture. `--no-gl` gives the plain VGA adapter at a fixed
+`--res` (default 1280x800), drawn in software.
+
+A disk with WinCraft installed starts before the ISO, as the boot order of a
+real computer would: install, restart, and the installed system comes up.
+`--shell` adds root shells on the serial port and Ctrl+Alt+F2 for
+`tools/qmp.py` without changing how the VM boots (images newer than 0.6.1).
+
 QEMU uses KVM when `/dev/kvm` exists. Without it (virtualisation disabled in
 the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
@@ -220,10 +237,20 @@ Edit the entry in the boot menu (`e`) to add these to the command line:
 ### Installing
 
 Open **Install WinCraft OS** on the desktop, pick a disk, confirm. **The whole
-disk is erased.** Resulting layout (MBR, bootable on BIOS and UEFI):
+disk is erased.** By default WinCraft takes all of it; *Space for WinCraft*
+can give it less, from 5 GB, and the rest of the disk is left empty.
+Resulting layout (MBR, bootable on BIOS and UEFI):
 
-1. FAT32 `WINCRAFT` — boot loader, kernel, the system image
-2. ext4 `WINCRAFT_DATA` — everything you install or change
+1. FAT32 `WINCRAFT`, 1 GB — boot loader, kernel, the system image
+2. ext4, the rest of WinCraft's space — everything you install or change,
+   named `WINCRAFT_DATA` unless *Data partition name* says otherwise
+
+The installed boot menu names these two partitions by their UUIDs, so an
+installation medium left in the computer, which carries the same labels, is
+never used instead. An installation CD is ejected as the computer restarts.
+A USB stick can stay in, but if the computer's firmware starts it before the
+disk, remove it or choose the disk in the firmware's boot menu. *Install
+WinCraft OS* is shown only in a session started from the installation medium.
 
 ## Build it
 

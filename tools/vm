@@ -9,10 +9,19 @@
 #   tools/vm --iso FILE           boot another ISO than out/wincraft-<version>-x86_64.iso
 #   tools/vm --direct "ARGS"      skip the boot loader: load kernel + initramfs
 #                                 directly with this kernel command line
+#   tools/vm --shell              root shells on the serial port and Ctrl+Alt+F2
+#                                 (for tools/qmp.py sh), booting through the
+#                                 boot menu as usual, unlike --direct
+#   tools/vm --no-gl              plain VGA adapter, no 3D acceleration
 #   tools/vm --mem MB --smp N --res WxH --share DIR
 #
 # Hardware virtualisation (KVM) is used when /dev/kvm is available; otherwise
 # QEMU falls back to software emulation, which works but is many times slower.
+# In a window, the graphics adapter is a virtio GPU with 3D acceleration
+# (virgl): the guest's OpenGL, and Direct3D through Wine, are drawn by the
+# host's GPU. That needs a render node (/dev/dri/renderD*) and QEMU's GL
+# modules in the toolbox; without them, or with --no-gl or --headless, the
+# adapter is plain VGA and the guest renders in software.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,7 +29,7 @@ VERSION=$(cat "$PROJECT/VERSION")
 ISO=/work/out/wincraft-$VERSION-x86_64.iso
 VM=/work/build/vm
 
-headless=0 uefi=0 disk= direct= mem=4096 smp=4 res=1280x800 use_iso=1 share=
+headless=0 uefi=0 disk= direct= mem=4096 smp=4 res=1280x800 use_iso=1 share= nogl=0 shell=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --headless) headless=1 ;;
@@ -38,14 +47,16 @@ while [ $# -gt 0 ]; do
         --smp)      smp=$2; shift ;;
         --res)      res=$2; shift ;;
         --share)    share=$2; shift ;;
-        -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
+        --no-gl)    nogl=1 ;;
+        --shell)    shell=1 ;;
+        -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "vm: unknown option $1" >&2; exit 2 ;;
     esac
     shift
 done
 
 mkdir -p "$PROJECT/build/vm"
-rm -f "$PROJECT/build/vm/qmp.sock" "$PROJECT/build/vm/serial.sock"
+rm -f "$PROJECT/build/vm/qmp.sock" "$PROJECT/build/vm/serial.sock" "$PROJECT/build/vm/out.sock"
 
 args=(-name "WinCraft OS" -machine q35 -m "$mem" -smp "$smp")
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
@@ -55,8 +66,15 @@ else
     args+=(-accel tcg,thread=multi,tb-size=1024 -cpu max)
 fi
 
-args+=(-device "VGA,xres=${res%x*},yres=${res#*x}"
-       -device qemu-xhci -device usb-tablet -device usb-kbd
+gl=0
+if [ "$headless" = 0 ] && [ "$nogl" = 0 ] && compgen -G "/dev/dri/renderD*" >/dev/null &&
+   [ -f "$PROJECT/build/toolbox/usr/lib/qemu/hw-display-virtio-vga-gl.so" ]; then
+    gl=1
+    args+=(-device "virtio-vga-gl,xres=${res%x*},yres=${res#*x}")
+else
+    args+=(-device "VGA,xres=${res%x*},yres=${res#*x}")
+fi
+args+=(-device qemu-xhci -device usb-tablet -device usb-kbd
        -nic user,model=virtio-net-pci
        -rtc base=utc
        -qmp "unix:$VM/qmp.sock,server=on,wait=off"
@@ -86,6 +104,12 @@ if [ -n "$disk" ]; then
     args+=(-drive "file=$disk,format=qcow2,if=none,id=hd0" -device virtio-blk-pci,drive=hd0,bootindex=1)
 fi
 
+# read by the guest's rc.boot (images newer than 0.6.1); out.sock is a fast
+# channel to the guest for tools/qmp.py, where the serial port would stall it
+[ "$shell" = 1 ] && args+=(-smbios "type=11,value=wincraft.shell"
+    -chardev "socket,id=wcout,path=$VM/out.sock,server=on,wait=off"
+    -device "virtserialport,chardev=wcout,name=org.wincraft.out")
+
 if [ -n "$share" ]; then
     args+=(-virtfs "local,path=$share,mount_tag=host,security_model=none,readonly=on")
 fi
@@ -107,7 +131,7 @@ else
     else
         args+=(-audiodev none,id=snd0)
     fi
-    args+=(-display gtk,zoom-to-fit=on,clipboard=on)
+    args+=(-display "gtk,gl=$([ $gl = 1 ] && echo on || echo off),zoom-to-fit=on,clipboard=on")
     gui=1
 fi
 args+=(-device intel-hda -device hda-output,audiodev=snd0)

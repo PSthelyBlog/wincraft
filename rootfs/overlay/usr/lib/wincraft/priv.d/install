@@ -2,11 +2,21 @@
 # Install WinCraft OS to a disk. Runs as root, started by wcinit on behalf of
 # the installer window ("wcctl priv install <disk>").
 #
-#   usage: install <disk>        e.g. install sda   (a name from /sys/block)
+#   usage: install <disk> [<MiB> [<name>]]
+#          e.g. install sda   or   install sda 40000 MYDATA
+#   <disk>  a name from /sys/block
+#   <MiB>   the space WinCraft takes from the start of the disk, both
+#           partitions together; 0 or none: the whole disk. The rest of the
+#           disk is left empty.
+#   <name>  the data partition's label (default WINCRAFT_DATA)
 #
 # THE WHOLE DISK IS ERASED. Layout written (MBR, boots on BIOS and UEFI):
-#   1  FAT32  "WINCRAFT"       boot loader, kernel, system image
-#   2  ext4   "WINCRAFT_DATA"  everything the user installs or changes
+#   1  FAT32  "WINCRAFT"       boot loader, kernel, system image (1 GiB)
+#   2  ext4   <name>           everything the user installs or changes
+# The installed boot menu names both partitions by UUID, so an installation
+# medium left in the computer, with the same labels, is never started instead.
+# An installation CD (or a virtual machine's ISO) is ejected when the computer
+# next restarts or shuts down (wcinit, /run/wincraft/eject).
 #
 # Progress goes to /run/wincraft/install.status, one line at a time; the last
 # line is "done" or "error: <reason>".
@@ -21,8 +31,11 @@ fail() { say "error: $*"; umount "$mnt" 2>/dev/null; exit 1; }
 : > "$status"
 chmod 644 "$status"
 
-name=$1
+name=$1 space=${2:-0} label=${3:-WINCRAFT_DATA}
 case "$name" in ''|*[!a-z0-9]*) fail "invalid disk name" ;; esac
+case "$space" in ''|*[!0-9]*) fail "invalid size" ;; esac
+case "$label" in ''|*[!A-Za-z0-9_-]*) fail "the name may use letters, digits, - and _" ;; esac
+[ ${#label} -le 16 ] || fail "the name is longer than 16 characters"
 disk=/dev/$name
 [ -b "$disk" ] && [ -d "/sys/block/$name" ] || fail "no such disk: $name"
 [ -e /run/wincraft/live ] || fail "the installer only runs from the installation medium"
@@ -30,6 +43,12 @@ disk=/dev/$name
 grep -q "^$disk" /proc/mounts && fail "$name is in use (it is the installation medium)"
 size=$(cat "/sys/block/$name/size")
 [ "$size" -ge 8388608 ] || fail "the disk is smaller than 4 GB"
+disk_mib=$((size / 2048))
+[ "$space" -gt 0 ] && [ "$space" -lt 4096 ] && fail "WinCraft needs at least 4 GB"
+[ "$space" -gt "$disk_mib" ] && fail "the disk has only $disk_mib MiB"
+# the data partition: the rest of the disk, or the rest of the space asked for
+data_size=
+[ "$space" -gt 0 ] && [ "$space" -lt $((disk_mib - 8)) ] && data_size="size=$((space - 1024))MiB, "
 
 case "$name" in *[0-9]) p=p ;; *) p= ;; esac     # nvme0n1 -> nvme0n1p1
 boot=$disk${p}1
@@ -40,7 +59,7 @@ wipefs -a -q "$disk" >/dev/null 2>&1
 /usr/bin/sfdisk -q --wipe always --wipe-partitions always "$disk" <<PART || fail "could not partition the disk"
 label: dos
 size=1024MiB, type=ef, bootable
-type=83
+${data_size}type=83
 PART
 /usr/bin/blockdev --rereadpt "$disk" 2>/dev/null
 udevadm settle --timeout=10
@@ -48,7 +67,10 @@ n=0; until [ -b "$boot" ] && [ -b "$data" ]; do n=$((n + 1)); [ $n -gt 50 ] && f
 
 say "Formatting"
 mkfs.fat -F 32 -n WINCRAFT "$boot" >/dev/null 2>&1 || fail "could not format the system partition"
-mkfs.ext4 -q -F -L WINCRAFT_DATA "$data" >/dev/null 2>&1 || fail "could not format the data partition"
+mkfs.ext4 -q -F -L "$label" "$data" >/dev/null 2>&1 || fail "could not format the data partition"
+uuid() { blkid "$1" | sed -n 's/.* UUID="\([A-Za-z0-9-]*\)".*/\1/p'; }
+boot_uuid=$(uuid "$boot") data_uuid=$(uuid "$data")
+[ -n "$boot_uuid" ] && [ -n "$data_uuid" ] || fail "the new partitions have no UUID"
 
 say "Copying the system"
 mkdir -p "$mnt"
@@ -61,10 +83,17 @@ cp "$src/wincraft/system.sfs" "$mnt/wincraft/system.sfs" || fail "copy failed (s
 say "Installing the boot loader"
 cp /usr/share/limine/limine-bios.sys "$mnt/boot/limine/" || fail "boot loader files missing"
 cp /usr/share/limine/BOOTX64.EFI /usr/share/limine/BOOTIA32.EFI "$mnt/EFI/BOOT/" || fail "boot loader files missing"
-cp /usr/share/wincraft/limine-installed.conf "$mnt/boot/limine/limine.conf" || fail "boot loader configuration missing"
+[ -f /usr/share/wincraft/limine-installed.conf ] || fail "boot loader configuration missing"
+sed "s/^\( *cmdline: wc\.live\)/\1 wc.medium=UUID=$boot_uuid wc.data=UUID=$data_uuid/" \
+    /usr/share/wincraft/limine-installed.conf > "$mnt/boot/limine/limine.conf" ||
+    fail "could not write the boot menu"
 sync
 /usr/bin/umount "$mnt" || fail "could not unmount the system partition"
 limine bios-install "$disk" >/dev/null 2>&1 || fail "could not install the boot loader"
 sync
+
+# a CD keeps the computer from starting the disk: out with it at the restart
+medium=$(awk '$2 == "/live/medium" { print $1 }' /proc/mounts)
+case "$medium" in /dev/sr[0-9]*) echo "$medium" > /run/wincraft/eject ;; esac
 
 say "done"

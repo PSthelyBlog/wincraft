@@ -12,13 +12,26 @@
   qmp.py serial                    print the serial log
   qmp.py quit                      power the VM off hard
   qmp.py raw '{"execute": ...}'    send one raw QMP command
+
+QEMU cannot take a screenshot of a virtio GPU with 3D acceleration (the
+default in a window, see tools/vm). "shot" then reads the screen from the
+guest's X server instead (tools/xshot.c, copied into the guest the first
+time), and the pointer commands take the screen size from xrandr there. The
+pictures travel through the virtio-serial port tools/vm --shell adds
+(build/vm/out.sock); without it, as base64 through the serial console, which
+stalls the guest for seconds.
 """
+import base64
+import gzip
 import json
 import os
 import socket
 import struct
+import subprocess
 import sys
+import threading
 import time
+import zlib
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VM = os.path.join(PROJECT, "build", "vm")
@@ -76,7 +89,15 @@ class QMP:
 
     def size(self):
         path = os.path.join(VM, ".size.png")
-        self.shot(path)
+        r = self.cmd("screendump", filename="/work" + path[len(PROJECT):], format="png")
+        if "error" in r:                    # a 3D-accelerated display: ask X
+            out, _ = serial_sh("DISPLAY=:0 xrandr 2>/dev/null | "
+                               "sed -n 's/.* current \\([0-9]*\\) x \\([0-9]*\\),.*/\\1 \\2/p'", 10)
+            try:
+                w, h = out.split()[:2]
+                return int(w), int(h)
+            except ValueError:
+                sys.exit("cannot tell the screen size: " + r["error"]["desc"])
         with open(path, "rb") as f:
             head = f.read(24)
         os.unlink(path)
@@ -106,7 +127,131 @@ class QMP:
             sys.exit("screenshots must be saved inside the project directory")
         r = self.cmd("screendump", filename="/work" + path[len(PROJECT):], format="png")
         if "error" in r:
-            sys.exit(r["error"]["desc"])
+            if r["error"]["desc"] != "no surface":
+                sys.exit(r["error"]["desc"])
+            guest_shot(path)
+
+
+def write_png(path, width, height, rgb):
+    raw = b"".join(b"\0" + rgb[y * width * 3:(y + 1) * width * 3] for y in range(height))
+
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" +
+                chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+                chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+# the guest's end of out.sock, found by the port's name
+GUEST_PORT = ('for p in /sys/class/virtio-ports/*; do '
+              '[ "$(cat $p/name 2>/dev/null)" = org.wincraft.out ] && port=/dev/${p##*/}; done; ')
+
+
+def channel_connect(sock):
+    """Connect to out.sock and wait until QEMU has taken the connection: the
+    guest reads end of file, and its writes are lost, while QEMU sees none."""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(sock)
+    q = QMP()
+    for _ in range(50):
+        if any(c["label"] == "wcout" and not c["filename"].startswith("disconnected")
+               for c in q.cmd("query-chardev")["return"]):
+            break
+        time.sleep(0.05)
+    q.s.close()
+    return s
+
+
+def channel_read(sock, command, timeout=60):
+    """Run command in the guest with its output going to out.sock; return what arrives.
+    A PPM is complete when its header's size is reached."""
+    s = channel_connect(sock)
+    s.settimeout(timeout)
+    got = {"data": bytearray()}
+
+    def reader():
+        buf, need = got["data"], None
+        while need is None or len(buf) < need:
+            try:
+                chunk = s.recv(1 << 20)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if need is None and buf.count(b"\n") >= 3:
+                head = bytes(buf).split(b"\n", 3)
+                w, h = map(int, head[1].split())
+                need = len(buf) - len(head[3]) + w * h * 3
+
+    t = threading.Thread(target=reader)
+    t.start()
+    serial_sh(GUEST_PORT + command + ' > "$port"', timeout)
+    t.join()
+    s.close()
+    return bytes(got["data"])
+
+
+def channel_write(sock, data, command, timeout=30):
+    """Send data to the guest through out.sock, to command's standard input.
+    The guest opens the port first: QEMU drops what arrives before that."""
+    s = channel_connect(sock)
+    serial_sh("kill $(cat /run/channel.pid 2>/dev/null) 2>/dev/null; rm -f /run/channel.done; " + GUEST_PORT +
+              '( (%s) < "$port"; touch /run/channel.done ) >/dev/null 2>&1 & echo $! > /run/channel.pid'
+              % command, 10)
+    time.sleep(0.5)
+    s.sendall(data)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out, _ = serial_sh("test -e /run/channel.done && echo finished", 10)
+        if "finished" in out:
+            break
+        time.sleep(0.3)
+    s.close()
+
+
+def guest_shot(path):
+    """Screenshot taken by the guest's X server."""
+    xshot, src = os.path.join(PROJECT, "build", "xshot"), os.path.join(PROJECT, "tools", "xshot.c")
+    sock = os.path.join(VM, "out.sock")
+    if not os.path.exists(xshot) or os.path.getmtime(xshot) < os.path.getmtime(src):
+        subprocess.run([os.path.join(PROJECT, "tools", "tb"), "gcc", "-O2", "-o", "/work/build/xshot",
+                        "/work/tools/xshot.c", "-lX11"], check=True)
+    out, _ = serial_sh("test -x /run/xshot && echo present", 10)
+    if "present" not in out:
+        data = open(xshot, "rb").read()
+        if os.path.exists(sock):
+            # BusyBox head exits with 1 here even when it got everything: check the size
+            channel_write(sock, data, "head -c %d > /run/xshot.new; [ $(stat -c %%s /run/xshot.new) = %d ] && "
+                                      "chmod 755 /run/xshot.new && mv /run/xshot.new /run/xshot"
+                                      % (len(data), len(data)))
+        else:
+            data = base64.b64encode(data).decode()
+            serial_sh("rm -f /run/xshot.b64", 10)
+            for i in range(0, len(data), 1500):
+                serial_sh("echo %s >> /run/xshot.b64" % data[i:i + 1500], 10)
+            serial_sh("base64 -d /run/xshot.b64 > /run/xshot && chmod 755 /run/xshot; rm -f /run/xshot.b64", 10)
+    if os.path.exists(sock):
+        ppm = channel_read(sock, "/run/xshot")
+    else:
+        out, done = serial_sh("/run/xshot | gzip -1 | base64", 120)
+        if not done:
+            sys.exit("no screenshot: the guest's serial shell did not answer (boot it with --shell)")
+        try:
+            ppm = gzip.decompress(base64.b64decode(out))
+        except (ValueError, OSError):
+            sys.exit("no screenshot: " + out.strip()[:200])
+    try:
+        _, dims, _, rgb = ppm.split(b"\n", 3)
+        width, height = map(int, dims.split())
+        if len(rgb) < width * height * 3:
+            raise ValueError("short")
+    except ValueError:
+        sys.exit("no screenshot: the guest sent %d bytes" % len(ppm))
+    write_png(path, width, height, rgb)
 
 
 def serial_sh(command, timeout=60):

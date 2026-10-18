@@ -10,6 +10,8 @@
  *   /etc/wincraft/rc.shutdown    one-shot teardown (shell)
  *   /run/wcinit.ctl              control FIFO: poweroff | reboot | halt |
  *                                priv <helper> [args...]
+ *   /run/wincraft/eject          a CD drive to eject on the way down, written
+ *                                by the installer so the next start is from disk
  *
  * "priv" runs /usr/lib/wincraft/priv.d/<helper> as root. It is how the
  * unprivileged desktop asks for privileged work (e.g. installing to disk):
@@ -33,6 +35,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <linux/cdrom.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/signalfd.h>
@@ -48,6 +53,7 @@
 #define CTL_GROUP    "wheel"
 #define PRIV_DIR     "/usr/lib/wincraft/priv.d"
 #define LOG_DIR      "/run/log"
+#define EJECT_FILE   "/run/wincraft/eject"
 #define MAX_SVC      32
 #define ENV_PATH     "PATH=/usr/local/bin:/usr/bin"
 
@@ -253,12 +259,47 @@ static void run_priv(char *args)
     }
 }
 
+/* The CD drive the installer asked to eject: /dev/srN, or "" for none. */
+static void eject_request(char *dev, size_t size)
+{
+    FILE *f = fopen(EJECT_FILE, "r");
+
+    dev[0] = 0;
+    if (!f)
+        return;
+    if (fgets(dev, (int)size, f))
+        dev[strcspn(dev, "\n")] = 0;
+    fclose(f);
+    if (strncmp(dev, "/dev/sr", 7) || !dev[7] || strspn(dev + 7, "0123456789") != strlen(dev + 7))
+        dev[0] = 0;
+}
+
+/* Eject the installation CD as the very last thing: a live system runs from
+ * it until then. What is left to run of this program is locked in memory
+ * first, for nothing can be read from the disc once it is out. */
+static void eject_cd(const char *dev)
+{
+    int fd;
+
+    if (!dev[0])
+        return;
+    mlockall(MCL_CURRENT);
+    fd = open(dev, O_RDONLY | O_NONBLOCK);
+    if (fd < 0)
+        return;
+    ioctl(fd, CDROM_LOCKDOOR, 0);
+    ioctl(fd, CDROMEJECT, 0);
+    close(fd);
+}
+
 static void do_shutdown(int how)
 {
     struct timespec ts = { 0, 100 * 1000 * 1000 };
+    char eject[32];
     int i;
 
     say("wcinit: shutting down");
+    eject_request(eject, sizeof(eject));
     run_script(RC_SHUTDOWN);
 
     kill(-1, SIGTERM);
@@ -281,6 +322,7 @@ static void do_shutdown(int how)
     wait(NULL);
     mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
     sync();
+    eject_cd(eject);
     reboot(how);
     for (;;)
         pause();

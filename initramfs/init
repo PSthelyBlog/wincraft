@@ -8,6 +8,10 @@
 #   - a partition labelled WINCRAFT_DATA, if there is one: changes persist
 #     (this is what an installed system has);
 #   - otherwise RAM: a live session that leaves no trace.
+# An installed system names its own two partitions on the command line
+# (wc.medium=UUID=..., wc.data=UUID=..., written by the installer), so that an
+# installation medium left in the computer, with the same labels, is never
+# taken instead.
 # Options: wc.toram    copy the image to RAM so the medium can be removed
 #          wc.nodata   ignore WINCRAFT_DATA for this boot (live session)
 #          wc.break    drop to a shell before switching root
@@ -28,10 +32,12 @@ rescue() {
     exec setsid cttyhack sh
 }
 
-live= root= toram= brk= nodata=
+live= root= toram= brk= nodata= medium=LABEL=WINCRAFT datavol=LABEL=WINCRAFT_DATA
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         wc.live)   live=1 ;;
+        wc.medium=UUID=*|wc.medium=LABEL=*) medium=${arg#wc.medium=} ;;
+        wc.data=UUID=*|wc.data=LABEL=*)     datavol=${arg#wc.data=} ;;
         wc.toram)  toram=1 ;;
         wc.nodata) nodata=1 ;;
         wc.break)  brk=1 ;;
@@ -51,14 +57,15 @@ wait_for() {
 }
 
 if [ -n "$live" ]; then
-    dev=$(wait_for LABEL=WINCRAFT) || rescue "boot medium (label WINCRAFT) not found"
+    case "$medium$datavol" in *[!A-Za-z0-9=_-]*) rescue "malformed wc.medium= or wc.data=" ;; esac
+    dev=$(wait_for "$medium") || rescue "boot medium ($medium) not found"
     mount -o ro "$dev" /mnt/medium || rescue "cannot mount boot medium $dev"
     img=/mnt/medium/wincraft/system.sfs
     [ -f "$img" ] || rescue "system image missing on $dev"
 
     # Writable layer: the data partition when present, else memory.
     data=
-    [ -n "$nodata" ] || data=$(findfs LABEL=WINCRAFT_DATA 2>/dev/null)
+    [ -n "$nodata" ] || data=$(findfs "$datavol" 2>/dev/null)
     if [ -n "$data" ] && mount -t ext4 -o rw,noatime "$data" /mnt/rw 2>/dev/null; then
         toram=
     else

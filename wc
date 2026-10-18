@@ -25,7 +25,8 @@ PROJECT=$PWD
 TOOLBOX_PACKAGES="base-devel bc cpio libisoburn mtools dosfstools squashfs-tools e2fsprogs
     limine openssl libelf perl python rsync git kmod inetutils xz zstd lz4 imagemagick
     qemu-system-x86 qemu-ui-gtk qemu-ui-sdl qemu-hw-display-virtio-gpu
-    qemu-hw-display-virtio-vga qemu-audio-pipewire qemu-audio-pa qemu-img edk2-ovmf
+    qemu-hw-display-virtio-vga qemu-hw-display-virtio-gpu-gl qemu-hw-display-virtio-vga-gl
+    qemu-ui-egl-headless qemu-audio-pipewire qemu-audio-pa qemu-img edk2-ovmf
     mingw-w64-gcc wine libx11 xorg-server-xvfb xorg-xrandr xorg-xprop xorg-xwininfo
     xdotool maim ttf-liberation"
 MIRROR=https://geo.mirror.pkgbuild.com
