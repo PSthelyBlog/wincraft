@@ -108,6 +108,11 @@ Verified in QEMU, booting the ISO, unless noted:
   the built-in Wine Mono with nothing to install. ILSpy 11 (.NET 10) asks for
   Microsoft's .NET Desktop Runtime; after its installer, ILSpy runs and
   decompiles.
+- **3D and sound in a virtual machine**: SuperTuxKart 1.5, installed by
+  WinCraft Assistant from the official release, plays in `./wc run`'s window
+  with OpenGL 4.3 drawn by the host's graphics card (virgl on an AMD Radeon),
+  and its sound plays through QEMU's Intel HD Audio on the host's speakers
+  (PipeWire).
 
 ## What it is not
 
@@ -119,7 +124,7 @@ Be clear-eyed about these before you depend on it:
   not. Check a program at <https://appdb.winehq.org>.
 - **Little GPU acceleration.** In a virtual machine with a virtio GPU and
   virgl, as `./wc run` starts it, the guest's OpenGL (which Wine also uses for
-  Direct3D) runs on the host's graphics card; games are untested there. On
+  Direct3D) runs on the host's graphics card; SuperTuxKart plays well. On
   real hardware everything tested so far is software-rendered (OpenGL
   through llvmpipe): fine for applications, far too slow for modern 3D games.
   Intel graphics have a kernel driver and may be accelerated, but that is
@@ -139,8 +144,8 @@ Be clear-eyed about these before you depend on it:
   rather than inside the taskbar.
 - The clock is UTC and the keyboard layout is US unless set at boot
   (`wc.kbd=fr`); there is no settings panel for either yet.
-- Untested: real hardware, booting from a USB stick, sound output, UEFI boot
-  of an *installed* disk. Secure Boot is not supported (the boot loader is
+- Untested: real hardware (its sound included), booting from a USB stick,
+  UEFI boot of an *installed* disk. Secure Boot is not supported (the boot loader is
   unsigned).
 - It has had no security review. Treat it as a single-user machine.
 

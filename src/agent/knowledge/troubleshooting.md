@@ -57,9 +57,15 @@
 
 ## Display, graphics, sound
 
-- Graphics are software OpenGL (llvmpipe): fine for applications, slow for
-  3D games. No Vulkan, so no Direct3D 12.
-- There is no display or sound settings panel yet. Sound output is untested.
+- Graphics: in a virtual machine with a virtio GPU and virgl, as `./wc run`
+  starts it, OpenGL runs on the host's graphics card (the renderer is named
+  "virgl"). Elsewhere it is software OpenGL (llvmpipe): fine for
+  applications, slow for 3D games. No Vulkan, so no Direct3D 12.
+- There is no display or sound settings panel yet. Sound works in a virtual
+  machine (QEMU's Intel HD Audio, played by the host's sound server) and is
+  untested on real hardware. When a program plays but nothing is heard in a
+  virtual machine, check the host's volume, and its "WinCraft OS" stream,
+  first.
 
 ## Keyboard layout, clock
 
