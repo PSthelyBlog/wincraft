@@ -129,7 +129,7 @@ class QMP:
         if "error" in r:
             if r["error"]["desc"] != "no surface":
                 sys.exit(r["error"]["desc"])
-            guest_shot(path)
+            guest_shot(path, self)
 
 
 def write_png(path, width, height, rgb):
@@ -150,25 +150,30 @@ GUEST_PORT = ('for p in /sys/class/virtio-ports/*; do '
               '[ "$(cat $p/name 2>/dev/null)" = org.wincraft.out ] && port=/dev/${p##*/}; done; ')
 
 
-def channel_connect(sock):
+def channel_connect(sock, q=None):
     """Connect to out.sock and wait until QEMU has taken the connection: the
-    guest reads end of file, and its writes are lost, while QEMU sees none."""
+    guest reads end of file, and its writes are lost, while QEMU sees none.
+    q: the caller's QMP connection; QEMU takes one at a time, so a second
+    one would wait for the first to close."""
     s = socket.socket(socket.AF_UNIX)
     s.connect(sock)
-    q = QMP()
+    own = q is None
+    if own:
+        q = QMP()
     for _ in range(50):
         if any(c["label"] == "wcout" and not c["filename"].startswith("disconnected")
                for c in q.cmd("query-chardev")["return"]):
             break
         time.sleep(0.05)
-    q.s.close()
+    if own:
+        q.s.close()
     return s
 
 
-def channel_read(sock, command, timeout=60):
+def channel_read(sock, command, timeout=60, q=None):
     """Run command in the guest with its output going to out.sock; return what arrives.
     A PPM is complete when its header's size is reached."""
-    s = channel_connect(sock)
+    s = channel_connect(sock, q)
     s.settimeout(timeout)
     got = {"data": bytearray()}
 
@@ -195,10 +200,10 @@ def channel_read(sock, command, timeout=60):
     return bytes(got["data"])
 
 
-def channel_write(sock, data, command, timeout=30):
+def channel_write(sock, data, command, timeout=30, q=None):
     """Send data to the guest through out.sock, to command's standard input.
     The guest opens the port first: QEMU drops what arrives before that."""
-    s = channel_connect(sock)
+    s = channel_connect(sock, q)
     serial_sh("kill $(cat /run/channel.pid 2>/dev/null) 2>/dev/null; rm -f /run/channel.done; " + GUEST_PORT +
               '( (%s) < "$port"; touch /run/channel.done ) >/dev/null 2>&1 & echo $! > /run/channel.pid'
               % command, 10)
@@ -213,8 +218,8 @@ def channel_write(sock, data, command, timeout=30):
     s.close()
 
 
-def guest_shot(path):
-    """Screenshot taken by the guest's X server."""
+def guest_shot(path, q=None):
+    """Screenshot taken by the guest's X server; q as for channel_connect."""
     xshot, src = os.path.join(PROJECT, "build", "xshot"), os.path.join(PROJECT, "tools", "xshot.c")
     sock = os.path.join(VM, "out.sock")
     if not os.path.exists(xshot) or os.path.getmtime(xshot) < os.path.getmtime(src):
@@ -227,7 +232,7 @@ def guest_shot(path):
             # BusyBox head exits with 1 here even when it got everything: check the size
             channel_write(sock, data, "head -c %d > /run/xshot.new; [ $(stat -c %%s /run/xshot.new) = %d ] && "
                                       "chmod 755 /run/xshot.new && mv /run/xshot.new /run/xshot"
-                                      % (len(data), len(data)))
+                                      % (len(data), len(data)), q=q)
         else:
             data = base64.b64encode(data).decode()
             serial_sh("rm -f /run/xshot.b64", 10)
@@ -235,7 +240,7 @@ def guest_shot(path):
                 serial_sh("echo %s >> /run/xshot.b64" % data[i:i + 1500], 10)
             serial_sh("base64 -d /run/xshot.b64 > /run/xshot && chmod 755 /run/xshot; rm -f /run/xshot.b64", 10)
     if os.path.exists(sock):
-        ppm = channel_read(sock, "/run/xshot")
+        ppm = channel_read(sock, "/run/xshot", q=q)
     else:
         out, done = serial_sh("/run/xshot | gzip -1 | base64", 120)
         if not done:
