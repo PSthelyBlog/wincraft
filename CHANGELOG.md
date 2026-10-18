@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.1 — 2026-10-18
+
+A fix for the WinCraft Assistant and the WinCraft Agent.
+
+- **A request to the AI provider no longer fails when a tool returns
+  bytes that are not text.** When a command's output, a log or a page held
+  them, for example a search that read the system's own programs, the
+  provider refused the request ("The request body is not valid JSON:
+  invalid unicode code point"), and every later one in the same chat. Such
+  bytes are now sent as the replacement character �. Found by the
+  agent's first time zone task.
+- The agent's rules ask it not to print binary files, which only waste its
+  output.
+- Everything else is as in 0.7.
+
 ## 0.7 — 2026-10-18
 
 WinCraft can now grow on one computer: *features* add what it lacks, and
