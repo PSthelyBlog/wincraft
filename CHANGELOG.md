@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.2 — 2026-10-18
+
+The WinCraft Agent is asked to build features that undo themselves.
+
+- **Disabling or removing a feature the agent makes should bring the
+  computer back to how it was.** Its rules now ask that hooks write nothing
+  lasting outside the feature's folder: what they make goes in `/run`,
+  which is empty at every start, and where a system path is needed, a fixed
+  link into `/run` leads nowhere once the feature is off. Registry
+  settings, which stay after a feature is removed, are kept for when
+  nothing else works, and the feature's description says so. The agent is
+  asked to test the undo in its sandbox too.
+- Found with the agent's time zone feature: its first version linked
+  `/etc/localtime` straight to the zone file, so turning it off would have
+  kept Paris time. Refused and asked, the agent rebuilt it the way the
+  rules now describe; after a restart, Linux and Windows programs showed
+  Paris time.
+- Everything else is as in 0.7.1.
+
 ## 0.7.1 — 2026-10-18
 
 A fix for the WinCraft Assistant and the WinCraft Agent.
