@@ -12,6 +12,8 @@
 #   tools/vm --shell              root shells on the serial port and Ctrl+Alt+F2
 #                                 (for tools/qmp.py sh), booting through the
 #                                 boot menu as usual, unlike --direct
+#   tools/vm --gamepads           hand the game controllers connected now to
+#                                 the VM (the host stops seeing them)
 #   tools/vm --no-gl              plain VGA adapter, no 3D acceleration
 #   tools/vm --mem MB --smp N --res WxH --share DIR
 #
@@ -29,7 +31,7 @@ VERSION=$(cat "$PROJECT/VERSION")
 ISO=/work/out/wincraft-$VERSION-x86_64.iso
 VM=/work/build/vm
 
-headless=0 uefi=0 disk= direct= mem=4096 smp=4 res=1280x800 use_iso=1 share= nogl=0 shell=0
+headless=0 uefi=0 disk= direct= mem=4096 smp=4 res=1280x800 use_iso=1 share= nogl=0 shell=0 gamepads=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --headless) headless=1 ;;
@@ -49,7 +51,8 @@ while [ $# -gt 0 ]; do
         --share)    share=$2; shift ;;
         --no-gl)    nogl=1 ;;
         --shell)    shell=1 ;;
-        -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
+        --gamepads) gamepads=1 ;;
+        -h|--help)  sed -n '2,27p' "$0"; exit 0 ;;
         *) echo "vm: unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -109,6 +112,27 @@ fi
 [ "$shell" = 1 ] && args+=(-smbios "type=11,value=wincraft.shell"
     -chardev "socket,id=wcout,path=$VM/out.sock,server=on,wait=off"
     -device "virtserialport,chardev=wcout,name=org.wincraft.out")
+
+# Game controllers: their input devices, forwarded as virtio input devices
+# with the same name and USB ids, so that Wine recognises them (an Xbox
+# controller becomes an XInput gamepad). This needs read-write access to
+# /dev/input/eventN, which the desktop grants the logged-in user for
+# joysticks; the USB device itself is usually root's only.
+if [ "$gamepads" = 1 ]; then
+    found=0
+    for pad in /dev/input/by-id/*-event-joystick; do
+        [ -e "$pad" ] || continue
+        dev=$(readlink -f "$pad")
+        if [ -r "$dev" ] && [ -w "$dev" ]; then
+            args+=(-device "virtio-input-host-pci,evdev=$dev")
+            echo "vm: game controller ${pad##*/} -> VM" >&2
+            found=1
+        else
+            echo "vm: no access to $dev (${pad##*/}), not passed" >&2
+        fi
+    done
+    [ "$found" = 1 ] || echo "vm: --gamepads: no game controller found" >&2
+fi
 
 if [ -n "$share" ]; then
     args+=(-virtfs "local,path=$share,mount_tag=host,security_model=none,readonly=on")

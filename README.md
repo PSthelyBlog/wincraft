@@ -220,6 +220,12 @@ real computer would: install, restart, and the installed system comes up.
 `--shell` adds root shells on the serial port and Ctrl+Alt+F2 for
 `tools/qmp.py` without changing how the VM boots (images newer than 0.6.1).
 
+`--gamepads` hands the game controllers connected when the VM starts to it;
+the host stops seeing them until the VM ends. Windows programs see an Xbox
+controller as an XInput gamepad. QEMU forwards the controller's input device
+(`/dev/input/eventN`, which the host's desktop lets you use) rather than the
+USB device, which only root may hand over.
+
 QEMU uses KVM when `/dev/kvm` exists. Without it (virtualisation disabled in
 the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
