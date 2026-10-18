@@ -9,21 +9,26 @@ Start menu, and there is nothing else on the disk.
 - about **80 MB of RAM** in use at the idle desktop
 - runs live from the ISO, or installs to disk in under a minute
 - 64-bit and 32-bit Windows programs
-- a built-in assistant that knows WinCraft and can look at this computer,
-  using an AI model you choose (optional)
+- **WinCraft Assistant**, built in: it knows WinCraft, looks at this computer
+  to answer, and asks before it changes anything, using an AI model you
+  choose (optional)
+- **WinCraft Agent**: when WinCraft lacks something, such as a keyboard
+  layout that stays, the assistant hands the task over, and the agent builds
+  the missing piece for this computer as a *feature*, as administrator in a
+  sandbox, after you approve its plan and its result
 
-**Status: 0.6.2, a working preview.** Read [What it is not](#what-it-is-not)
+**Status: 0.7, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
 
 ![The WinCraft desktop: Start menu, Notepad and Minesweeper](docs/screenshot.png)
 
 ## Download
 
-Get `wincraft-0.6.2-x86_64.iso` from the [releases page](../../releases) and
+Get `wincraft-0.7-x86_64.iso` from the [releases page](../../releases) and
 check it against the `.sha256` file published next to it:
 
 ```sh
-sha256sum -c wincraft-0.6.2-x86_64.iso.sha256
+sha256sum -c wincraft-0.7-x86_64.iso.sha256
 ```
 
 Then boot it in a virtual machine. This is the configuration it was tested
@@ -32,7 +37,7 @@ with (4 GB of RAM, 4 CPUs):
 ```sh
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -device VGA -device qemu-xhci -device usb-tablet -device usb-kbd \
-    -nic user,model=virtio-net-pci -cdrom wincraft-0.6.2-x86_64.iso
+    -nic user,model=virtio-net-pci -cdrom wincraft-0.7-x86_64.iso
 ```
 
 To share the clipboard (text, both ways) with the VM, add QEMU's clipboard
@@ -60,7 +65,7 @@ projects that already do the hard parts, and writes everything in between:
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
 | **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
 | **Shell** | `wcshell.exe`: desktop, taskbar, Start menu with search, Run, *Download a Program*, installer front end. A native Win32 program | **written for WinCraft** (`src/shell`) |
-| **Assistant** | `wcagent.exe`: *WinCraft Assistant*, a chat about WinCraft and this computer with the AI model you choose. A native Win32 program | **written for WinCraft** (`src/agent`) |
+| **Assistant and Agent** | `wcagent.exe`: *WinCraft Assistant*, a chat about WinCraft and this computer with the AI model you choose, and *WinCraft Agent*, which builds features for this computer in a sandbox. A native Win32 program | **written for WinCraft** (`src/agent`) |
 | **Boot, install, build** | early userspace, live/installed boot, disk installer, image assembler | **written for WinCraft** |
 
 The userland is not a Linux distribution with a desktop on top. The build
@@ -104,6 +109,16 @@ Verified in QEMU, booting the ISO, unless noted:
   official download pages; a link in an answer opening in Firefox. Against a
   scripted test server speaking both API formats: every tool, every
   permission dialog (allow and refuse), stopping a request, errors.
+- **WinCraft Agent**, with Claude Sonnet 5.5, on an installed system: asked
+  to keep the French keyboard layout, the assistant named what WinCraft
+  lacks and handed the task over; the agent studied how WinCraft applies
+  `wc.kbd=`, built and tested a feature in its sandbox (a setting and a boot
+  hook), and after both approvals the layout was French after a restart.
+  Against the scripted test server: the sandbox's limits, refusing the plan
+  or the result, a second hand-over while one runs, an agent that is killed.
+- **Features**: every extension point, hooks that fail or hang, a feature
+  that root does not own (refused), disabling and removing in *WinCraft
+  Features*, and the boot menu's *without your features* entry.
 - **.NET programs**: KeePass 2.61 (.NET Framework, Windows Forms) runs on
   the built-in Wine Mono with nothing to install. ILSpy 11 (.NET 10) asks for
   Microsoft's .NET Desktop Runtime; after its installer, ILSpy runs and
@@ -143,7 +158,8 @@ Be clear-eyed about these before you depend on it:
 - Notification-area icons appear in a small floating window above the clock
   rather than inside the taskbar.
 - The clock is UTC and the keyboard layout is US unless set at boot
-  (`wc.kbd=fr`); there is no settings panel for either yet.
+  (`wc.kbd=fr`); there is no settings panel for either yet. The WinCraft
+  Agent can add a feature that keeps a layout.
 - Untested: real hardware (its sound included), booting from a USB stick.
   Secure Boot is not supported (the boot loader is unsigned).
 - It has had no security review. Treat it as a single-user machine.
@@ -299,7 +315,7 @@ Closing the agent's window ends the task and its sandbox.
 After [building](#build-it), the same ISO is in `out/`:
 
 ```sh
-./wc run                 # boots out/wincraft-0.6.2-x86_64.iso in a QEMU window
+./wc run                 # boots out/wincraft-0.7-x86_64.iso in a QEMU window
 ./wc run --uefi          # same, UEFI firmware
 ./wc run --disk build/vm/disk.qcow2:20G     # with a blank disk to install to
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
@@ -330,7 +346,7 @@ the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
 
 To put it on a USB stick, write the ISO to the whole device
-(`dd if=out/wincraft-0.6.2-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
+(`dd if=out/wincraft-0.7-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
 
 ### Boot options
 

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7 — 2026-10-18
+
+WinCraft can now grow on one computer: *features* add what it lacks, and
+the WinCraft Agent builds them.
+
+- **Features.** A feature adds to WinCraft, on one computer, something it
+  does not do yet: a setting it lacks, something to do at every start or
+  login, registry settings for every program. It is a folder of root's in
+  `/var/lib/wincraft/features` whose files are linked into folders the
+  system image reads: `settings.d`, `hooks/boot.d`, `hooks/session.d`,
+  `services.d` and `registry.d` under `/etc/wincraft`. No system file is
+  replaced, so features survive updates. A hook that fails or hangs is
+  logged and skipped, and never stops the computer from starting.
+- ***WinCraft Features*** in the Start menu lists them, with what each does,
+  who made it and for what request, and disables, enables or removes them.
+  The boot menu's ***WinCraft OS (without your features)*** entry starts
+  without any of them, to repair one that keeps the computer from working.
+- **The WinCraft Agent.** When WinCraft lacks what you need, WinCraft
+  Assistant says what is missing and, if you allow it, hands the task to the
+  agent, which opens in its own window:
+  - it shows you its plan first, and nothing runs until you approve it;
+  - it works as administrator in a sandbox, a copy of the system in memory
+    that is thrown away at the end, with the network but without disks,
+    your files, or the power to mount, make devices or leave it; every
+    command it runs is listed in its window;
+  - it shows you the feature's files in full and every other change it
+    made, and only if you approve is the feature added and enabled.
+
+  Tested with Claude Sonnet 5.5: asked for a French keyboard that stays, it
+  built a feature that applies the layout at every start. The agent uses the
+  provider set up in WinCraft Assistant, and takes more requests than a chat.
+  Any program running as you can drive its sandbox: see the README's
+  security note.
+- **Long requests for permission** (the agent's plan and result, a long
+  task) open in a window that scrolls, where Enter refuses.
+- For `./wc run` (building from source): `tools/qmp.py` no longer hangs when
+  a screenshot has to come from the guest.
+- The kernel, Wine and the Arch packages are those of 0.6.1.
+
 ## 0.6.2 — 2026-10-18
 
 Installing and using WinCraft, improved after a fresh install from start to
