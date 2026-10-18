@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.3 — 2026-10-18
+
+WinCraft Assistant sees WinCraft's own services, and the clock as it is.
+
+- **The assistant's overview of the computer lists WinCraft's services**
+  (time sync, network, logging, the desktop, and those features add), with
+  whether each is running, and the features added to the computer. Its
+  tools see only Windows programs: asked to keep the clock in sync, it had
+  said that WinCraft lacked time sync, which it has always had. wcinit now
+  records which process each service is in
+  `/run/wincraft/services.status`, since a script's process is only `sh`.
+- **The overview gives the clock as programs see it**: local date and time,
+  the offset from UTC and the time zone. The assistant had said the clock
+  showed UTC on a computer whose time zone feature set Paris time.
+- **The `time` service keeps `ntpd`'s messages** in its log,
+  `/run/log/time.log`, instead of discarding them.
+- The README says that the clock follows internet time.
+- Everything else is as in 0.7.2.
+
 ## 0.7.2 — 2026-10-18
 
 The WinCraft Agent is asked to build features that undo themselves.
