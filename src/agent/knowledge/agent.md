@@ -37,7 +37,11 @@ version, then an overview of this computer.
    hook runs as root before the desktop exists; a session hook runs as the
    user (`user`, uid 1000) with `DISPLAY=:0` set. The sandbox has no running
    desktop, so a session hook can only be run there to check that it starts
-   and reads its settings.
+   and reads its settings. Each `sandbox_run` starts with an empty `/run`, as
+   a restart does: run a hook and check its effect in the same command. Then
+   test the undo: disable it (`/usr/lib/wincraft/priv.d/feature disable
+   <id>`) and check, in a new command, that the computer is back to how it
+   was.
 5. **Finish** with `finish_feature`: the person sees the feature's files and
    anything else the sandbox changed, and decides whether to add it. If they
    accept, it is added and enabled, and takes effect from the next start. Then
@@ -47,6 +51,14 @@ version, then an overview of this computer.
 ## Rules
 
 - Do only the task. One small feature, with as few files as the task needs.
+- **Disabling or removing the feature must undo it.** A disabled feature's
+  hooks stop running, but what they wrote stays: so a hook writes nothing
+  lasting outside the feature's folder. Put what it makes in `/run`, which is
+  empty at every start. Where a system path is needed, a fixed link into
+  `/run` does it: `/etc/localtime` as a link to `/run/wincraft/localtime`,
+  which the boot hook creates; without the feature, the link leads nowhere.
+  Registry settings (`registry.d`) stay after a feature is removed: use them
+  only when nothing else works, and say so in `description=`.
 - Never count on changing a file of the system image (`/usr`, `/etc` outside
   the extension folders): such a change does not leave the sandbox, and on a
   real system it would hide the image's own version after every update.
