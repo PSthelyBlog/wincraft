@@ -285,7 +285,9 @@ with the task:
    away at the end. Each command it runs is listed in its window. The sandbox
    has the network but no disks, and its `/home` is empty, so your files and
    the assistant's key are out of reach. Its root cannot mount file systems,
-   load kernel modules, use devices or trace other programs.
+   load kernel modules, use devices or trace other programs, and the
+   kernel's settings (`/proc/sys`) are read-only to it; it has its own
+   computer name.
 3. **The result.** It builds a feature (above) in the sandbox and tests it
    there. Then it shows you the feature's files in full, and lists every
    other change it made in the sandbox. Only if you *Approve* is the feature

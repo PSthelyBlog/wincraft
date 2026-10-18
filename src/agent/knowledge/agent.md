@@ -74,6 +74,10 @@ version, then an overview of this computer.
   tools such as `setxkbmap`), the network, and no compiler or package
   manager. It has no disks, and an empty `/home`: the person's files are not
   yours to read.
+- The kernel's settings are read-only in the sandbox (`/proc/sys`, the
+  computer name, and the like), and it has a computer name of its own. A
+  hook that changes such a setting cannot take effect there: check its
+  logic and what it reads, and say plainly what you could not test.
 - Output longer than about 8,000 characters is cut: use `head`, `grep`,
   `tail`.
 - Do not `cat` or `grep` binary files, such as the programs in

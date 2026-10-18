@@ -19,10 +19,13 @@
 #
 # Inside, commands run as root over a full view of the system, but nothing
 # they do reaches it: they write to the layer, which is thrown away at the
-# end. They have their own process list and mounts, a /dev without disks, an
-# empty /home (the person's files and the assistant's key stay out of reach)
-# and the network. Their root lacks the powers that could break out: mounting,
-# kernel modules, raw devices, chroot, tracing other processes.
+# end. They have their own process list, mounts and computer name, a /dev
+# without disks, an empty /home (the person's files and the assistant's key
+# stay out of reach) and the network. Their root lacks the powers that could
+# break out: mounting, kernel modules, raw devices, chroot, tracing other
+# processes. The kernel's settings are the computer's, so /proc/sys and its
+# like are read-only inside, and the /proc files that act on the machine are
+# masked (WinCraft 0.7 to 0.7.3 left them writable).
 #
 # Only a feature leaves the sandbox, through "commit": a folder under
 # /var/lib/wincraft/features that the agent made, holding only files and
@@ -61,10 +64,21 @@ request() {
 
 # sandboxed STDIN COMMAND: run COMMAND (sh -c) inside, as limited root
 sandboxed() {
-    $unshare --mount --pid --fork --kill-child /bin/sh -c '
+    $unshare --mount --pid --uts --ipc --fork --kill-child /bin/sh -c '
         r=$1 stdin=$2 cmd=$3 caps=$4 mount=$5
         $mount --make-rprivate /
         $mount -t proc proc "$r/proc"
+        # nothing runs unless the kernel settings are out of reach
+        for p in sys irq bus fs; do
+            [ -e "$r/proc/$p" ] || continue
+            $mount --bind "$r/proc/$p" "$r/proc/$p" && $mount -o remount,bind,ro "$r/proc/$p" ||
+                { echo "sandbox: could not protect /proc/$p" >&2; exit 1; }
+        done
+        for p in sysrq-trigger kcore keys timer_list; do
+            [ -e "$r/proc/$p" ] || continue
+            $mount --bind /dev/null "$r/proc/$p" && $mount -o remount,bind,ro "$r/proc/$p" ||
+                { echo "sandbox: could not mask /proc/$p" >&2; exit 1; }
+        done
         $mount -t tmpfs -o mode=755,size=16m dev "$r/dev"
         for n in null:1:3 zero:1:5 full:1:7 random:1:8 urandom:1:9 tty:5:0; do
             set -- $(echo "$n" | tr : " ")
