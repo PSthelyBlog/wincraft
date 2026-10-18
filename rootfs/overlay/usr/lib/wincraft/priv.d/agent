@@ -1,0 +1,172 @@
+#!/bin/sh
+# The WinCraft Agent's sandbox. Runs as root, started by wcinit for the agent's
+# window: "wcctl priv agent <action> <task> [...]".
+#
+#   start  TASK              make the sandbox: a copy-on-write layer over the
+#                            whole system, kept in memory
+#   run    TASK SEQ          run the shell command in the request file cmd.SEQ
+#   write  TASK SEQ PATH     write the request file data.SEQ to PATH
+#   diff   TASK SEQ          list what the sandbox changed
+#   commit TASK ID SEQ       keep the feature /var/lib/wincraft/features/ID
+#                            made in the sandbox, and enable it
+#   stop   TASK              end the sandbox and everything in it
+#
+# Requests come from /run/user/1000/wcagent/TASK; results go to
+# /run/wincraft/agent/TASK/out: SEQ.out (what the command printed) and
+# SEQ.status ("exit N"); start, SEQ.diff and SEQ.commit end in "done" or
+# "error: <reason>". The window numbers its requests, so that no old answer is
+# ever mistaken for a new one.
+#
+# Inside, commands run as root over a full view of the system, but nothing
+# they do reaches it: they write to the layer, which is thrown away at the
+# end. They have their own process list and mounts, a /dev without disks, an
+# empty /home (the person's files and the assistant's key stay out of reach)
+# and the network. Their root lacks the powers that could break out: mounting,
+# kernel modules, raw devices, chroot, tracing other processes.
+#
+# Only a feature leaves the sandbox, through "commit": a folder under
+# /var/lib/wincraft/features that the agent made, holding only files and
+# folders (no links, no devices), handed to priv.d/feature as root's own. The
+# agent's window asks the person before it asks for that.
+#
+# Anyone who may run this helper can use the sandbox, and so read what root
+# can read; WinCraft is a single-user system (README, "WinCraft Agent").
+PATH=/usr/bin
+# BusyBox's sh runs its own applets before searching PATH: util-linux's tools
+# go by their full names
+unshare=/usr/bin/unshare mount=/usr/bin/mount umount=/usr/bin/umount
+user_dir=/run/user/1000/wcagent
+base=/run/wincraft/agent
+features=/var/lib/wincraft/features
+caps=-all,+chown,+dac_override,+dac_read_search,+fowner,+fsetid,+kill,+setgid,+setuid,+net_bind_service
+
+action=$1 task=$2
+case "$task" in ''|*[!a-f0-9]*) echo "agent: invalid task" >&2; exit 2 ;; esac
+[ ${#task} -ge 16 ] && [ ${#task} -le 32 ] || { echo "agent: invalid task" >&2; exit 2; }
+dir=$base/$task
+root=$dir/root out=$dir/out req=$user_dir/$task
+
+result() {      # result FILE LINE...: the outcome of an action, for the window
+    f=$1; shift
+    for line in "$@"; do echo "$line"; done > "$out/$f.part"
+    chmod 644 "$out/$f.part"
+    mv "$out/$f.part" "$out/$f"
+}
+
+# A request file the person's side wrote: a plain file of theirs, not a link.
+request() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u "$1")" = 1000 ] &&
+        [ "$(stat -c %s "$1")" -le 1048576 ]
+}
+
+# sandboxed STDIN COMMAND: run COMMAND (sh -c) inside, as limited root
+sandboxed() {
+    $unshare --mount --pid --fork --kill-child /bin/sh -c '
+        r=$1 stdin=$2 cmd=$3 caps=$4 mount=$5
+        $mount --make-rprivate /
+        $mount -t proc proc "$r/proc"
+        $mount -t tmpfs -o mode=755,size=16m dev "$r/dev"
+        for n in null:1:3 zero:1:5 full:1:7 random:1:8 urandom:1:9 tty:5:0; do
+            set -- $(echo "$n" | tr : " ")
+            mknod -m 666 "$r/dev/$1" c "$2" "$3"
+        done
+        mkdir -p "$r/dev/pts" "$r/dev/shm"
+        $mount -t tmpfs -o mode=1777 shm "$r/dev/shm"
+        $mount -t tmpfs -o mode=755 home "$r/home"
+        $mount -t tmpfs -o mode=755 run "$r/run"
+        mkdir -p "$r/run/wincraft"
+        cp /run/resolv.conf "$r/run/resolv.conf" 2>/dev/null
+        exec chroot "$r" /usr/bin/setpriv --no-new-privs --inh-caps=-all --bounding-set="$caps" \
+            /usr/bin/timeout 300 /bin/sh -c "cd /root 2>/dev/null || cd /; $cmd" < "$stdin"
+    ' sandbox "$root" "$1" "$2" "$caps" "$mount"
+}
+
+[ "$action" = start ] || [ -d "$root" ] || { echo "agent: no sandbox for $task" >&2; exit 1; }
+mkdir -p "$base"
+exec 9> "$base/.$task.lock"
+flock 9                                 # one action at a time per sandbox
+# a request that waited for "stop" finds nothing left to act on
+[ "$action" = start ] || [ -d "$root" ] || { rm -f "$base/.$task.lock"; exit 1; }
+
+case "$action" in
+start)
+    [ -d "$dir" ] && { result start "error: this task already has a sandbox"; exit 1; }
+    mkdir -m 755 "$dir" "$out" && mkdir -m 700 "$dir/fs" "$root" || exit 1
+    $mount -t tmpfs -o size=2g,mode=700 agentfs "$dir/fs" &&
+        mkdir "$dir/fs/upper" "$dir/fs/work" &&
+        $mount -t overlay -o "lowerdir=/,upperdir=$dir/fs/upper,workdir=$dir/fs/work" agent "$root" ||
+        { $umount "$dir/fs" 2>/dev/null; result start "error: could not make the sandbox"; exit 1; }
+    chmod 755 "$root"
+    result start done
+    ;;
+run)
+    seq=$3
+    case "$seq" in ''|*[!0-9]*) exit 2 ;; esac
+    request "$req/cmd.$seq" || { result "$seq.status" "error: no command"; exit 1; }
+    cmd=$(cat "$req/cmd.$seq")
+    sandboxed /dev/null "$cmd" > "$out/$seq.full" 2>&1
+    status=$?
+    tail -c 65536 "$out/$seq.full" > "$out/$seq.out"; rm -f "$out/$seq.full"
+    chmod 644 "$out/$seq.out"
+    case $status in 124|143) result "$seq.status" "timeout" ;; *) result "$seq.status" "exit $status" ;; esac
+    ;;
+write)
+    seq=$3 path=$4
+    case "$seq" in ''|*[!0-9]*) exit 2 ;; esac
+    case "$path" in /*) ;; *) result "$seq.status" "error: the path must start with /"; exit 1 ;; esac
+    case "$path" in *[!A-Za-z0-9._/+@-]*|*/../*|*/..|*/./*) result "$seq.status" "error: invalid path"; exit 1 ;; esac
+    request "$req/data.$seq" || { result "$seq.status" "error: no data"; exit 1; }
+    # written from inside, so that no link in the sandbox can point outside
+    sandboxed "$req/data.$seq" "mkdir -p \"\$(dirname '$path')\" && cat > '$path'" > "$out/$seq.out" 2>&1
+    status=$?
+    chmod 644 "$out/$seq.out"
+    result "$seq.status" "exit $status"
+    ;;
+diff)
+    seq=$3
+    case "$seq" in ''|*[!0-9]*) exit 2 ;; esac
+    # added or changed files, and removed ones (overlay whiteouts), but not
+    # the shell's own history and caches
+    (
+        cd "$dir/fs/upper" || exit 1
+        find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\.#changed: #'
+        find . -mindepth 1 -type c | sed 's#^\.#removed: #'
+    ) | grep -v -E ': /(root/\.ash_history|tmp/|var/cache/)' | sort > "$out/$seq.diff.part"
+    echo done >> "$out/$seq.diff.part"
+    chmod 644 "$out/$seq.diff.part"
+    mv "$out/$seq.diff.part" "$out/$seq.diff"
+    ;;
+commit)
+    id=$3 seq=$4
+    case "$seq" in ''|*[!0-9]*) exit 2 ;; esac
+    c=$seq.commit
+    case "$id" in ''|-*|*[!a-z0-9-]*) result "$c" "error: invalid feature name"; exit 1 ;; esac
+    [ ${#id} -le 40 ] || { result "$c" "error: the feature name is too long"; exit 1; }
+    src=$dir/fs/upper$features/$id
+    [ -d "$src" ] && [ ! -L "$src" ] || { result "$c" "error: the sandbox has no feature called $id"; exit 1; }
+    [ -e "$features/$id" ] && { result "$c" "error: this computer already has a feature called $id"; exit 1; }
+    [ -f "$src/feature.conf" ] || { result "$c" "error: the feature has no feature.conf"; exit 1; }
+    [ -n "$(find "$src" ! -type f ! -type d)" ] &&
+        { result "$c" "error: the feature holds something other than files and folders"; exit 1; }
+    mkdir -p "$features"
+    rm -rf "$features/.$id.new"
+    cp -R "$src" "$features/.$id.new" &&
+        chown -R 0:0 "$features/.$id.new" && chmod -R go-w "$features/.$id.new" &&
+        rm -f "$features/.$id.new/enabled" &&
+        mv "$features/.$id.new" "$features/$id" ||
+        { rm -rf "$features/.$id.new"; result "$c" "error: could not copy the feature"; exit 1; }
+    echo "$(date '+%Y-%m-%d %H:%M:%S') add $id (WinCraft Agent, task $task)" >> /var/lib/wincraft/features.log
+    /usr/lib/wincraft/priv.d/feature enable "$id"
+    result "$c" "$(tail -1 /run/wincraft/feature.status)"
+    ;;
+stop)
+    $umount "$root" 2>/dev/null || $umount -l "$root"
+    $umount "$dir/fs" 2>/dev/null || $umount -l "$dir/fs"
+    rm -rf "$dir"
+    rm -f "$base/.$task.lock"
+    ;;
+*)
+    echo "agent: unknown action $action" >&2
+    exit 2
+    ;;
+esac

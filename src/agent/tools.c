@@ -8,7 +8,12 @@
  *   TIER_WEB       reads a page on the internet; asked once per chat, and
  *                  left out entirely when the person switched it off
  *   TIER_CHANGE    changes something; asked every time, with the details
- * Nothing here needs root, and nothing reaches wcinit's privileged helpers.
+ *   TIER_AGENT     the WinCraft Agent's plan and result: shown in full and
+ *                  approved by the person
+ * The assistant's own tools need no root and reach none of wcinit's
+ * privileged helpers. The WinCraft Agent (wcagent.exe /agent) has a tool set
+ * of its own, around a sandbox run as root by priv.d/agent; see "The WinCraft
+ * Agent" below.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -858,7 +863,8 @@ char *system_snapshot(void)
 
 char *knowledge_text(void)
 {
-    char *k = read_unix_file("/usr/share/wincraft/assistant/knowledge.md", 512 * 1024);
+    char *k = read_unix_file(g_agent_mode ? "/usr/share/wincraft/assistant/agent.md"
+                                          : "/usr/share/wincraft/assistant/knowledge.md", 512 * 1024);
 
     return k ? k : utf8_dup("You are WinCraft Assistant, built into WinCraft OS. "
                             "Your reference documentation is missing from this system.");
@@ -1085,8 +1091,478 @@ static void summarize_backtrace(sb_t *b, char *text, DWORD pid)
 }
 
 /* ======================================================================
+ * The WinCraft Agent: a plan, a sandbox, a feature
+ *
+ * wcagent.exe /agent builds one feature (README, "Features") for a task the
+ * assistant handed over. Its tools: propose_plan, which the person approves
+ * before anything else runs; sandbox_run and sandbox_write, which work as root
+ * in a sandbox, a copy-on-write layer over the system that is thrown away
+ * (priv.d/agent); finish_feature, which shows the person the feature and
+ * every other change, and keeps only the feature, if they accept.
+ * Requests go to the helper as files in /run/user/1000/wcagent/<task>, its
+ * answers come back in /run/wincraft/agent/<task>/out, numbered.
+ * ====================================================================== */
+
+BOOL g_agent_mode;
+static char g_task[24];             /* the sandbox's name: hex digits */
+static BOOL g_plan_ok, g_sandbox_up;
+static int g_seq;
+
+static BOOL feature_id_ok(const char *id)
+{
+    size_t i, n = strlen(id);
+
+    if (!n || n > 40 || id[0] == '-')
+        return FALSE;
+    for (i = 0; i < n; i++)
+        if (!islower((unsigned char)id[i]) && !isdigit((unsigned char)id[i]) && id[i] != '-')
+            return FALSE;
+    return TRUE;
+}
+
+static BOOL agent_helper(const char *fmt, ...)
+{
+    char args[200];
+    WCHAR w[260];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(args, sizeof(args), fmt, ap);
+    va_end(ap);
+    _snwprintf(w, ARRAYSIZE(w), L"priv agent %S", args);
+    w[ARRAYSIZE(w) - 1] = 0;
+    return run_native(L"/usr/bin/wcctl", w, 0);
+}
+
+/* Delete /run/user/1000/wcagent/<name>: the requests one window wrote. */
+static void remove_requests(const WCHAR *name)
+{
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+
+    _snwprintf(dir, MAX_PATH, UNIX_ROOT L"\\run\\user\\1000\\wcagent\\%s", name);
+    dir[MAX_PATH - 1] = 0;
+    _snwprintf(path, MAX_PATH, L"%s\\*", dir);
+    path[MAX_PATH - 1] = 0;
+    if ((h = FindFirstFileW(path, &fd)) != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                _snwprintf(path, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+                path[MAX_PATH - 1] = 0;
+                DeleteFileW(path);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir);
+}
+
+static BOOL task_name(const WCHAR *s)
+{
+    size_t n = wcslen(s);
+
+    return n >= 16 && n <= 32 && wcsspn(s, L"0123456789abcdef") == n;
+}
+
+void agent_begin(void)
+{
+    LARGE_INTEGER t;
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+
+    /* Only one agent window runs at a time (its mutex), so a sandbox still
+     * there belongs to one that crashed or was killed: end it, and remove
+     * its requests. */
+    if ((h = FindFirstFileW(UNIX_ROOT L"\\run\\wincraft\\agent\\*", &fd)) != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && task_name(fd.cFileName))
+                agent_helper("stop %S", fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if ((h = FindFirstFileW(UNIX_ROOT L"\\run\\user\\1000\\wcagent\\*", &fd)) != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && task_name(fd.cFileName))
+                remove_requests(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    QueryPerformanceCounter(&t);
+    snprintf(g_task, sizeof(g_task), "%08lx%08lx%04lx", (unsigned long)(t.HighPart ^ GetTickCount()),
+             (unsigned long)t.LowPart, (unsigned long)(GetCurrentProcessId() & 0xffff));
+    g_plan_ok = g_sandbox_up = FALSE;
+    g_seq = 0;
+}
+
+void agent_end(void)
+{
+    WCHAR name[ARRAYSIZE(g_task)];
+
+    if (g_sandbox_up)
+        agent_helper("stop %s", g_task);
+    g_sandbox_up = g_plan_ok = FALSE;
+    if (!g_task[0])
+        return;
+    MultiByteToWideChar(CP_UTF8, 0, g_task, -1, name, ARRAYSIZE(name));
+    remove_requests(name);
+}
+
+/* A request for the helper: /run/user/1000/wcagent/<task>/<name>. */
+static BOOL agent_put(const char *name, const char *data)
+{
+    WCHAR path[MAX_PATH];
+    DWORD len = (DWORD)strlen(data), put = 0;
+    HANDLE h;
+
+    CreateDirectoryW(UNIX_ROOT L"\\run\\user\\1000\\wcagent", NULL);
+    _snwprintf(path, MAX_PATH, UNIX_ROOT L"\\run\\user\\1000\\wcagent\\%S", g_task);
+    CreateDirectoryW(path, NULL);
+    _snwprintf(path, MAX_PATH, UNIX_ROOT L"\\run\\user\\1000\\wcagent\\%S\\%S", g_task, name);
+    h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return FALSE;
+    WriteFile(h, data, len, &put, NULL);
+    CloseHandle(h);
+    return put == len;
+}
+
+/* The helper's answer /run/wincraft/agent/<task>/out/<name>, or NULL. */
+static char *agent_wait(const char *name, DWORD ms)
+{
+    char path[160];
+    DWORD start = GetTickCount();
+
+    snprintf(path, sizeof(path), "/run/wincraft/agent/%s/out/%s", g_task, name);
+    for (;;) {
+        char *s = read_unix_file(path, 1 << 20);
+
+        if (s)
+            return s;
+        if (llm_cancelled() || GetTickCount() - start > ms)
+            return NULL;
+        Sleep(150);
+    }
+}
+
+/* Runs a command in the sandbox; returns "exit N" or NULL, *out its output. */
+static char *agent_exec(const char *cmd, char **out)
+{
+    char name[32], *status;
+    int seq = ++g_seq;
+
+    *out = NULL;
+    snprintf(name, sizeof(name), "cmd.%d", seq);
+    if (!agent_put(name, cmd) || !agent_helper("run %s %d", g_task, seq))
+        return NULL;
+    snprintf(name, sizeof(name), "%d.status", seq);
+    if (!(status = agent_wait(name, 330000)))
+        return NULL;
+    status[strcspn(status, "\r\n")] = 0;
+    snprintf(name, sizeof(name), "%d.out", seq);
+    *out = agent_wait(name, 5000);
+    return status;
+}
+
+static const char NO_PLAN[] = "Nothing runs before the person approves a plan: call propose_plan first.";
+
+/* "Ran in the sandbox: <the command's first line>" */
+static char *command_label(const char *verb, const char *cmd)
+{
+    size_t n = strcspn(cmd, "\r\n");
+    char *label = malloc(160);
+
+    snprintf(label, 160, "%s: %.*s%s", verb, (int)(n > 100 ? 100 : n), cmd, n > 100 || cmd[n] ? " ..." : "");
+    return label;
+}
+
+static void propose_plan(sb_t *b, const json *args, approve_fn approve, void *ctx, const tool_def *t, char **label)
+{
+    const char *plan = arg_str(args, "plan"), *id = arg_str(args, "feature_id");
+    char *detail, *ready;
+    size_t size;
+
+    if (!feature_id_ok(id)) {
+        sb_add(b, "feature_id must be 1 to 40 lowercase letters, digits and hyphens, such as keyboard-layout.");
+        *label = utf8_dup("A plan was not shown (invalid feature name)");
+        return;
+    }
+    if (!*plan) {
+        sb_add(b, "The plan is empty.");
+        *label = utf8_dup("A plan was not shown (empty)");
+        return;
+    }
+    size = strlen(plan) + 600;
+    detail = malloc(size);
+    snprintf(detail, size, "%s\n\nThe feature will be called \"%s\".\n\nThe agent works as administrator, in a "
+             "sandbox: a copy of the system that is thrown away at the end. Nothing on this computer changes "
+             "until you approve the result.", plan, id);
+    if (!approve(t, "Approve the WinCraft Agent's plan?", detail, ctx)) {
+        sb_add(b, "The person refused the plan. Stop here, and say that nothing on the computer was changed.");
+        *label = utf8_dup("Plan refused");
+        free(detail);
+        return;
+    }
+    free(detail);
+    if (!g_sandbox_up) {
+        agent_helper("start %s", g_task);
+        ready = agent_wait("start", 60000);
+        if (!ready || strncmp(ready, "done", 4)) {
+            sb_addf(b, "The plan was approved, but the sandbox could not be made: %s",
+                    ready ? ready : "the system service did not answer.");
+            *label = utf8_dup("Plan approved; the sandbox could not be made");
+            free(ready);
+            return;
+        }
+        free(ready);
+        g_sandbox_up = TRUE;
+    }
+    g_plan_ok = TRUE;
+    sb_addf(b, "The person approved the plan. The sandbox is ready: sandbox_run and sandbox_write now work. "
+               "Build the feature in /var/lib/wincraft/features/%s/.", id);
+    *label = utf8_dup("Plan approved");
+}
+
+static void sandbox_run(sb_t *b, const json *args, char **label)
+{
+    const char *cmd = arg_str(args, "command");
+    char *status, *out;
+
+    if (!g_plan_ok) {
+        sb_add(b, NO_PLAN);
+        *label = utf8_dup("A command was refused: no approved plan yet");
+        return;
+    }
+    if (!*cmd) {
+        sb_add(b, "The command is empty.");
+        return;
+    }
+    status = agent_exec(cmd, &out);
+    *label = command_label("Ran in the sandbox", cmd);
+    if (!status) {
+        sb_add(b, llm_cancelled() ? "Stopped by the person; the command may still finish in the sandbox."
+                                  : "The sandbox did not answer within 330 seconds.");
+    } else if (out && strlen(out) > RESULT_MAX - 200) {
+        /* the end, where errors are */
+        const char *tail = out + strlen(out) - (RESULT_MAX - 200);
+
+        while (((unsigned char)*tail & 0xc0) == 0x80)
+            tail++;
+        sb_addf(b, "%s\n[... the start was cut]\n%s", status, tail);
+    } else {
+        sb_addf(b, "%s\n%s", status, out && *out ? out : "(no output)\n");
+    }
+    free(status);
+    free(out);
+}
+
+static void sandbox_write(sb_t *b, const json *args, char **label)
+{
+    const char *path = arg_str(args, "path"), *content = arg_str(args, "content"), *p;
+    char name[32], *status, *out;
+    int seq;
+
+    if (!g_plan_ok) {
+        sb_add(b, NO_PLAN);
+        *label = utf8_dup("A file was refused: no approved plan yet");
+        return;
+    }
+    for (p = path; *p; p++)
+        if (!isalnum((unsigned char)*p) && !strchr("._/+@-", *p))
+            break;
+    if (path[0] != '/' || *p || strlen(path) > 200 || strstr(path, "/../") || strstr(path, "/./")) {
+        sb_add(b, "The path must be absolute, made of letters, digits and . _ / + @ -, without . or .. parts.");
+        *label = utf8_dup("A file was refused (invalid path)");
+        return;
+    }
+    seq = ++g_seq;
+    snprintf(name, sizeof(name), "data.%d", seq);
+    if (!agent_put(name, content) || !agent_helper("write %s %d %s", g_task, seq, path)) {
+        sb_add(b, "The request could not be passed to the sandbox.");
+        return;
+    }
+    snprintf(name, sizeof(name), "%d.status", seq);
+    status = agent_wait(name, 60000);
+    snprintf(name, sizeof(name), "%d.out", seq);
+    out = status ? agent_wait(name, 5000) : NULL;
+    if (status && !strncmp(status, "exit 0", 6))
+        sb_addf(b, "Wrote %s (%u bytes).", path, (unsigned)strlen(content));
+    else
+        sb_addf(b, "Could not write %s: %s%s", path, status ? status : "no answer", out ? out : "");
+    *label = command_label("Wrote in the sandbox", path);
+    free(status);
+    free(out);
+}
+
+static void finish_feature(sb_t *b, const json *args, approve_fn approve, void *ctx, const tool_def *t,
+                           char **label)
+{
+    const char *id = arg_str(args, "feature_id"), *summary = arg_str(args, "summary");
+    char cmd[400], name[32], *status, *files = NULL, *diff, *line, *done;
+    sb_t review;
+    int seq, others = 0;
+
+    if (!g_plan_ok) {
+        sb_add(b, NO_PLAN);
+        *label = utf8_dup("Refused: no approved plan yet");
+        return;
+    }
+    if (!feature_id_ok(id)) {
+        sb_add(b, "Invalid feature_id.");
+        return;
+    }
+    /* the feature's files, read inside the sandbox */
+    snprintf(cmd, sizeof(cmd), "cd /var/lib/wincraft/features/%s || exit 1; find . -type f ! -path ./enabled | "
+             "sort | while read f; do echo \"=== ${f#./}\"; cat \"$f\"; echo; done", id);
+    status = agent_exec(cmd, &files);
+    if (!status || strcmp(status, "exit 0")) {
+        sb_addf(b, "There is no feature folder /var/lib/wincraft/features/%s in the sandbox. %s", id,
+                files ? files : "");
+        *label = utf8_dup("Finishing failed: no feature folder");
+        free(status);
+        free(files);
+        return;
+    }
+    free(status);
+    /* the person sees all of it, or it is not offered: the helper keeps 64 KB of output */
+    if (files && strlen(files) > 60000) {
+        sb_add(b, "The feature's files are too large to show the person in full (more than 60 KB). Make it "
+                  "smaller: a feature holds short scripts and settings.");
+        *label = utf8_dup("Finishing failed: the feature is too large to show");
+        free(files);
+        return;
+    }
+    /* everything else the sandbox changed */
+    seq = ++g_seq;
+    agent_helper("diff %s %d", g_task, seq);
+    snprintf(name, sizeof(name), "%d.diff", seq);
+    diff = agent_wait(name, 60000);
+
+    sb_init(&review);
+    sb_addf(&review, "%s\n\nThe feature \"%s\", as it would be added:\n\n%s", summary, id, files ? files : "");
+    sb_add(&review, "\nOther changes the agent made in the sandbox. They are thrown away, not added:\n");
+    for (line = diff; line && *line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
+        size_t n = strcspn(line, "\n");
+        char prefix[80], mark[48], *at;
+
+        snprintf(prefix, sizeof(prefix), "/var/lib/wincraft/features/%s/", id);
+        snprintf(mark, sizeof(mark), "-%s-", id);
+        if (!strncmp(line, "done", 4) || ((at = strstr(line, prefix)) && at < line + n))
+            continue;
+        /* what enabling the feature in the sandbox, to test it, left behind */
+        if ((n == 39 && !strncmp(line, "changed: /var/lib/wincraft/features.log", 39)) ||
+            (!strncmp(line, "changed: /etc/wincraft/", 23) && (at = strstr(line, mark)) && at < line + n))
+            continue;
+        if (++others <= 40)
+            sb_addf(&review, "  %.*s\n", (int)n, line);
+    }
+    if (!others)
+        sb_add(&review, "  none\n");
+    else if (others > 40)
+        sb_addf(&review, "  ... %d in all\n", others);
+    free(diff);
+    free(files);
+
+    if (!approve(t, "Add this feature to this computer?", review.s, ctx)) {
+        sb_add(b, "The person did not add the feature. Nothing on this computer changed. Ask what they would "
+                  "like changed, or stop.");
+        *label = utf8_dup("Feature not added");
+        sb_free(&review);
+        return;
+    }
+    sb_free(&review);
+    seq = ++g_seq;
+    agent_helper("commit %s %s %d", g_task, id, seq);
+    snprintf(name, sizeof(name), "%d.commit", seq);
+    done = agent_wait(name, 60000);
+    if (done && !strncmp(done, "done", 4)) {
+        sb_addf(b, "The feature %s is added to this computer and enabled. Boot hooks and services take effect "
+                   "at the next restart, session hooks and registry settings at the next login. The person can "
+                   "disable or remove it in WinCraft Features (Start menu).", id);
+        *label = utf8_dup("Feature added and enabled");
+    } else {
+        sb_addf(b, "The feature could not be added: %s", done ? done : "the system service did not answer.");
+        *label = utf8_dup("Adding the feature failed");
+    }
+    free(done);
+}
+
+/* The assistant's side: hand a task to the agent, in its own window. */
+static void ask_agent(sb_t *b, const json *args, approve_fn approve, void *ctx, const tool_def *t, char **label)
+{
+    const char *task = arg_str(args, "task");
+    WCHAR dir[MAX_PATH], path[MAX_PATH], self[MAX_PATH], cmd[MAX_PATH + 16];
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HANDLE h, busy;
+    DWORD put = 0;
+    char *detail;
+    size_t size;
+
+    if (!*task || strlen(task) > 3000) {
+        sb_add(b, "Describe the task in at most 3,000 characters.");
+        return;
+    }
+    if ((busy = OpenMutexW(SYNCHRONIZE, FALSE, L"WinCraftAgent"))) {
+        CloseHandle(busy);
+        sb_add(b, "The WinCraft Agent is already working on a task, in its own window. It has to finish (or "
+                  "be closed) before it takes another.");
+        *label = utf8_dup("The WinCraft Agent is busy");
+        return;
+    }
+    size = strlen(task) + 600;
+    detail = malloc(size);
+    snprintf(detail, size, "%s\n\nThe WinCraft Agent works as administrator, in a sandbox: a copy of the "
+             "system that is thrown away at the end. It shows you its plan first, and its result before "
+             "adding anything. It uses your AI provider, like this chat.", task);
+    if (!approve(t, "Hand this task to the WinCraft Agent?", detail, ctx)) {
+        sb_add(b, "The person did not hand the task over. Nothing happened.");
+        *label = utf8_dup("The task was not handed over");
+        free(detail);
+        return;
+    }
+    free(detail);
+    if (!app_data_dir(dir)) {
+        sb_add(b, "The assistant's folder is not available.");
+        return;
+    }
+    PathCombineW(path, dir, L"agent-task.txt");
+    h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        WriteFile(h, task, (DWORD)strlen(task), &put, NULL);
+        CloseHandle(h);
+    }
+    GetModuleFileNameW(NULL, self, MAX_PATH);
+    _snwprintf(cmd, ARRAYSIZE(cmd), L"\"%s\" /agent", self);
+    cmd[ARRAYSIZE(cmd) - 1] = 0;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    if (!CreateProcessW(self, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        sb_add(b, "The WinCraft Agent could not be started.");
+        *label = utf8_dup("The WinCraft Agent could not be started");
+        return;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    activity_log("handed a task to the WinCraft Agent: %.300s", task);
+    sb_add(b, "The WinCraft Agent's window opened with this task. It shows the person its plan and works "
+              "from there; you have nothing more to do for this task.");
+    *label = utf8_dup("Handed the task to the WinCraft Agent (allowed)");
+}
+
+/* ======================================================================
  * Tools
  * ====================================================================== */
+
+#define WEB_PAGE_TOOL \
+    { "read_web_page", TIER_WEB, \
+      "Read a page on the internet: its title, text and links. Only https addresses on the public " \
+      "internet. Use it for what this computer and WinCraft's documentation cannot tell you, such as a " \
+      "program's current version and download address, or Wine's compatibility reports. The first page " \
+      "of a chat needs the person's permission.", \
+      "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}," \
+      "\"reason\":{\"type\":\"string\",\"description\":\"why you need this page, in a few words; " \
+      "shown to the person\"}},\"required\":[\"url\",\"reason\"]}" }
 
 const tool_def g_tools[] = {
     { "get_system_snapshot", TIER_READ,
@@ -1125,14 +1601,7 @@ const tool_def g_tools[] = {
       "Use it for a program that is not responding. Pauses the program for a second or two. "
       "Needs the person's permission.",
       "{\"type\":\"object\",\"properties\":{\"pid\":{\"type\":\"integer\"}},\"required\":[\"pid\"]}" },
-    { "read_web_page", TIER_WEB,
-      "Read a page on the internet: its title, text and links. Only https addresses on the public "
-      "internet. Use it for what this computer and WinCraft's documentation cannot tell you, such as a "
-      "program's current version and download address, or Wine's compatibility reports. The first page "
-      "of a chat needs the person's permission.",
-      "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"},"
-      "\"reason\":{\"type\":\"string\",\"description\":\"why you need this page, in a few words; "
-      "shown to the person\"}},\"required\":[\"url\",\"reason\"]}" },
+    WEB_PAGE_TOOL,
     { "end_program", TIER_CHANGE,
       "Stop a running program at once, like End Task (unsaved work is lost). Needs the person's "
       "permission.",
@@ -1154,43 +1623,83 @@ const tool_def g_tools[] = {
       "Download a Windows program or installer from an https address into the Downloads folder and "
       "start it, like Download a Program. Needs the person's permission.",
       "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"]}" },
+    { "ask_agent", TIER_CHANGE,
+      "Hand a task to the WinCraft Agent, which builds a feature on this computer for something WinCraft "
+      "does not do yet: a setting it lacks, something to set up at every start. It works as administrator in "
+      "a sandbox, in its own window, and the person approves its plan and its result. Describe the task "
+      "fully: what the person wants, and what you found WinCraft lacks. Needs the person's permission.",
+      "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\"}},\"required\":[\"task\"]}" },
 };
 const int g_ntools = ARRAYSIZE(g_tools);
 
+const tool_def g_agent_tools[] = {
+    { "propose_plan", TIER_AGENT,
+      "Show the person your plan and ask them to approve it. Call this first: nothing else works until "
+      "they approve. plan: in plain words, what the feature will do for the person, the files it adds and "
+      "how you will test it. feature_id: its folder name, lowercase letters, digits and hyphens.",
+      "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"},"
+      "\"feature_id\":{\"type\":\"string\"}},\"required\":[\"plan\",\"feature_id\"]}" },
+    { "sandbox_run", TIER_READ,
+      "Run a shell command (BusyBox sh) as root in the sandbox, a copy of the system that is thrown away. "
+      "Returns its exit status and output (the end, if long). At most 300 seconds.",
+      "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}" },
+    { "sandbox_write", TIER_READ,
+      "Write a text file in the sandbox, creating its folders: an absolute path, and the whole content.",
+      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
+      "\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}" },
+    { "finish_feature", TIER_AGENT,
+      "Show the person the finished feature, its files and everything else the sandbox changed, and ask "
+      "whether to add it to this computer. If they accept, it is added and enabled. summary: what it does "
+      "and how you tested it, in plain words.",
+      "{\"type\":\"object\",\"properties\":{\"feature_id\":{\"type\":\"string\"},"
+      "\"summary\":{\"type\":\"string\"}},\"required\":[\"feature_id\",\"summary\"]}" },
+    WEB_PAGE_TOOL,
+};
+const int g_nagent_tools = ARRAYSIZE(g_agent_tools);
+
+/* the tools of this window: the assistant's, or the agent's */
+static const tool_def *tool_set(int *count)
+{
+    *count = g_agent_mode ? g_nagent_tools : g_ntools;
+    return g_agent_mode ? g_agent_tools : g_tools;
+}
+
 const tool_def *tool_find(const char *name)
 {
-    int i;
+    int i, n;
+    const tool_def *set = tool_set(&n);
 
-    for (i = 0; i < g_ntools; i++)
-        if (!strcmp(g_tools[i].name, name))
-            return &g_tools[i];
+    for (i = 0; i < n; i++)
+        if (!strcmp(set[i].name, name))
+            return &set[i];
     return NULL;
 }
 
 json *tools_json(int format, BOOL web_pages)
 {
     json *arr = json_new(J_ARRAY);
-    int i;
+    int i, n;
+    const tool_def *set = tool_set(&n);
 
-    for (i = 0; i < g_ntools; i++) {
+    for (i = 0; i < n; i++) {
         json *t, *schema;
 
-        if (g_tools[i].tier == TIER_WEB && !web_pages)
+        if (set[i].tier == TIER_WEB && !web_pages)
             continue;
         t = json_push(arr, json_new(J_OBJECT));
-        schema = json_parse(g_tools[i].schema, strlen(g_tools[i].schema));
+        schema = json_parse(set[i].schema, strlen(set[i].schema));
 
         if (format == FMT_ANTHROPIC) {
-            json_set_str(t, "name", g_tools[i].name);
-            json_set_str(t, "description", g_tools[i].description);
+            json_set_str(t, "name", set[i].name);
+            json_set_str(t, "description", set[i].description);
             json_set(t, "input_schema", schema);
         } else {
             json *fn;
 
             json_set_str(t, "type", "function");
             fn = json_set(t, "function", json_new(J_OBJECT));
-            json_set_str(fn, "name", g_tools[i].name);
-            json_set_str(fn, "description", g_tools[i].description);
+            json_set_str(fn, "name", set[i].name);
+            json_set_str(fn, "description", set[i].description);
             json_set(fn, "parameters", schema);
         }
     }
@@ -2667,6 +3176,16 @@ char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ct
         download_and_run(&b, args, approve, ctx, t, label);
     } else if (!strcmp(n, "read_web_page")) {
         read_web_page(&b, args, approve, ctx, t, label);
+    } else if (!strcmp(n, "ask_agent")) {
+        ask_agent(&b, args, approve, ctx, t, label);
+    } else if (!strcmp(n, "propose_plan")) {
+        propose_plan(&b, args, approve, ctx, t, label);
+    } else if (!strcmp(n, "sandbox_run")) {
+        sandbox_run(&b, args, label);
+    } else if (!strcmp(n, "sandbox_write")) {
+        sandbox_write(&b, args, label);
+    } else if (!strcmp(n, "finish_feature")) {
+        finish_feature(&b, args, approve, ctx, t, label);
     }
     if (!*label)
         *label = utf8_dup(n);

@@ -122,7 +122,7 @@ BOOL llm_cancelled(void);
 void llm_host(const config *cfg, WCHAR *out, int size, int *port);
 
 /* ---- tools and what the assistant knows ---- */
-enum { TIER_READ, TIER_DIAGNOSE, TIER_WEB, TIER_CHANGE };
+enum { TIER_READ, TIER_DIAGNOSE, TIER_WEB, TIER_CHANGE, TIER_AGENT };
 
 typedef struct {
     const char *name;
@@ -136,6 +136,11 @@ typedef BOOL (*approve_fn)(const tool_def *t, const char *title, const char *det
 
 extern const tool_def g_tools[];
 extern const int g_ntools;
+extern BOOL g_agent_mode;          /* this window is the WinCraft Agent's */
+
+/* The agent's sandbox: a new one, and the end of it (tools.c). */
+void agent_begin(void);
+void agent_end(void);
 
 json *tools_json(int format, BOOL web_pages);
 const tool_def *tool_find(const char *name);

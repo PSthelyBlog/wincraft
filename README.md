@@ -171,8 +171,9 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   registry, the network, crash reports, storage. Each look-up is listed in the
   chat. Looking inside a program that is not responding (with Wine's
   debugger) asks first. Ending a program, changing a Wine DLL override,
-  setting a value under HKEY_CURRENT_USER and downloading and running an
-  installer each ask every time, in a dialog the model cannot answer.
+  setting a value under HKEY_CURRENT_USER, downloading and running an
+  installer and handing a task to the WinCraft Agent (below) each ask every
+  time, in a dialog the model cannot answer.
 - **Answers.** Lists and emphasis show as such, and web addresses in an
   answer are links: clicking one opens it in the web browser you installed,
   such as Firefox from *Download a Program*.
@@ -184,7 +185,8 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   network, and keeps no cookies. *Chat > Settings* can switch this off.
 - **What it cannot do.** Run commands, act as administrator, change system
   settings, install WinCraft, read your documents, fill in forms or sign in
-  on websites.
+  on websites. When WinCraft itself lacks what you need, it says so, and can
+  offer the WinCraft Agent.
 - **Privacy.** What you type and what it looks up, including the text of the
   web pages it reads, are sent to the provider you chose. Sites it reads see
   this computer's internet address, as with any browser. *Chat > What the assistant can see* shows exactly what is sent
@@ -207,7 +209,8 @@ the system image, and survive updates.
 - The boot menu's **WinCraft OS (without your features)** entry starts with
   every feature left out, to repair one that keeps the computer from
   working.
-- Features are made by root. WinCraft Assistant cannot make them yet.
+- Features are made by root, or by the WinCraft Agent (below) when you
+  approve one.
 
 ### How a feature works
 
@@ -247,6 +250,49 @@ the links, removing deletes the folder too, and every change is recorded in
 `/var/lib/wincraft/features.log`. Since any program may ask for this, and an
 enabled feature runs as root, the helper accepts only a feature that root
 owns, with nothing in it that anyone else can write and no symbolic links.
+
+## WinCraft Agent
+
+When WinCraft lacks something you need, such as a keyboard layout that stays
+after a restart, WinCraft Assistant says what is missing and offers to hand
+the task to the *WinCraft Agent*. If you accept, the agent's own window opens
+with the task:
+
+1. **The plan.** It first shows what it will build, the files the feature
+   will add and how it will test them, and waits for *Approve*. Refuse, and
+   nothing happens.
+2. **The sandbox.** It works as administrator (root) in a sandbox: a copy of
+   the whole system kept in memory, in which it may change anything, thrown
+   away at the end. Each command it runs is listed in its window. The sandbox
+   has the network but no disks, and its `/home` is empty, so your files and
+   the assistant's key are out of reach. Its root cannot mount file systems,
+   load kernel modules, use devices or trace other programs.
+3. **The result.** It builds a feature (above) in the sandbox and tests it
+   there. Then it shows you the feature's files in full, and lists every
+   other change it made in the sandbox. Only if you *Approve* is the feature
+   copied out, made root's own and enabled; everything else is thrown away.
+
+The feature then appears in *WinCraft Features*, marked as made by the
+WinCraft Agent with your request, and can be disabled or removed there.
+Closing the agent's window ends the task and its sandbox.
+
+- **What it is for.** Small additions on this computer: a setting, something
+  to do at every start or login, registry settings for every program. It
+  never changes the system image, so its features survive updates. It cannot
+  install Linux packages (WinCraft has no package manager) or compile
+  programs.
+- **Cost.** It uses the provider and model set up in WinCraft Assistant, and
+  takes more steps than a chat: up to 40 model requests for one message.
+- **Security.** The sandbox is run by a privileged helper,
+  `wcctl priv agent`, and, like WinCraft's other helpers, any program
+  running as you can call it. Such a program could run commands as root in a
+  sandbox, and so read what root can read outside `/home` and send it over
+  the network, or add a feature that runs as root at every boot, without the
+  agent's window or your approval. WinCraft is a single-user system that
+  trusts the programs you run the way it trusts you; the approvals protect
+  you from the model's mistakes, not from a hostile program. Boot with
+  *WinCraft OS (without your features)* to leave out a feature you did not
+  expect, and remove it in *WinCraft Features*.
 
 ## Run it from a build
 

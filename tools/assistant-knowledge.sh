@@ -1,5 +1,6 @@
 #!/bin/bash
-# assistant-knowledge.sh - print WinCraft Assistant's reference pack.
+# assistant-knowledge.sh [--agent] - print WinCraft Assistant's reference pack,
+# or with --agent the WinCraft Agent's, which has the agent's rules instead.
 #
 # The assistant sends it to the model at the start of every chat: its working
 # rules and troubleshooting guide (src/agent/knowledge), then WinCraft's own
@@ -9,9 +10,13 @@
 set -euo pipefail
 W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-cat "$W/src/agent/knowledge/assistant.md"
-echo
-cat "$W/src/agent/knowledge/troubleshooting.md"
+if [ "${1:-}" = --agent ]; then
+    cat "$W/src/agent/knowledge/agent.md"
+else
+    cat "$W/src/agent/knowledge/assistant.md"
+    echo
+    cat "$W/src/agent/knowledge/troubleshooting.md"
+fi
 echo
 echo "# Reference: WinCraft OS $(cat "$W/VERSION")"
 echo

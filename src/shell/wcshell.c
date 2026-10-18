@@ -2232,7 +2232,7 @@ enum { IDC_FEAT_LIST = 500, IDC_FEAT_INFO, IDC_FEAT_TOGGLE, IDC_FEAT_REMOVE, IDC
 struct feature {
     WCHAR id[48];
     WCHAR name[96];
-    WCHAR info[1200];
+    WCHAR info[1600];
     BOOL enabled;
 };
 
@@ -2275,7 +2275,7 @@ static void load_features(void)
         return;
     do {
         struct feature *f = &g_feats[g_nfeats];
-        WCHAR path[MAX_PATH], desc[600], created[64], by[96], version[32];
+        WCHAR path[MAX_PATH], desc[600], created[64], by[96], version[32], task[300];
         char conf[4096] = "";
 
         if (fd.cFileName[0] == L'.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
@@ -2290,6 +2290,7 @@ static void load_features(void)
         feat_value(conf, "created", created, ARRAYSIZE(created));
         feat_value(conf, "by", by, ARRAYSIZE(by));
         feat_value(conf, "version", version, ARRAYSIZE(version));
+        feat_value(conf, "task", task, ARRAYSIZE(task));
         wsprintfW(path, UNIX_ROOT FEATURES_UNIX L"/%s/enabled", f->id);
         for (WCHAR *q = path; *q; q++)
             if (*q == L'/')
@@ -2302,6 +2303,8 @@ static void load_features(void)
             wsprintfW(f->info + lstrlenW(f->info), L"\r\nAdded: %s", created);
         if (by[0])
             wsprintfW(f->info + lstrlenW(f->info), L"\r\nBy: %s", by);
+        if (task[0])                /* the request a WinCraft Agent feature answers */
+            wsprintfW(f->info + lstrlenW(f->info), L"\r\nAsked for: %s", task);
         if (version[0])
             wsprintfW(f->info + lstrlenW(f->info), L"\r\nMade on WinCraft OS %s", version);
         wsprintfW(f->info + lstrlenW(f->info), L"\r\nFolder: %s/%s", FEATURES_UNIX, f->id);

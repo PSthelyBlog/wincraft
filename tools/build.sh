@@ -279,6 +279,7 @@ step_rootfs() {
         install -m755 $B/agent/wcagent.exe $R/usr/lib/wincraft/
         mkdir -p $R/usr/share/wincraft/assistant
         bash $W/tools/assistant-knowledge.sh > $R/usr/share/wincraft/assistant/knowledge.md
+        bash $W/tools/assistant-knowledge.sh --agent > $R/usr/share/wincraft/assistant/agent.md
     fi
     [ -d $W/assets ] && rsync -a $W/assets/ $R/usr/share/wincraft/
 

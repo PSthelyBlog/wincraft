@@ -29,6 +29,7 @@
 #include <string.h>
 
 #define MAX_STEPS       12          /* model calls per question */
+#define AGENT_STEPS     40          /* ... for the WinCraft Agent's task */
 
 enum {
     IDC_TRANSCRIPT = 100, IDC_INPUT, IDC_SEND, IDC_STOP, IDC_STATUS,
@@ -60,6 +61,18 @@ static long g_tok_in, g_tok_out;
 static WCHAR g_chat_file[MAX_PATH];
 static WNDPROC g_input_proc;
 static HANDLE g_stop_event;         /* set by Stop: the chat thread stops waiting */
+
+/* wcagent.exe /agent is the WinCraft Agent's window (tools.c, "The WinCraft
+ * Agent"): the same chat with other tools, rules and limits. */
+static const WCHAR *app_name(void)
+{
+    return g_agent_mode ? L"WinCraft Agent" : APP_NAME;
+}
+
+static const WCHAR *main_class(void)
+{
+    return g_agent_mode ? L"WinCraftAgent" : L"WinCraftAssistant";
+}
 
 /* ======================================================================
  * Settings
@@ -740,7 +753,7 @@ static void chat_add(int kind, const char *utf8)
     sb_init(&file);
     if (kind == CHAT_ANSWER) {
         plain = md_plain(utf8);
-        sb_addf(&file, "Assistant:\n%s\n", plain);
+        sb_addf(&file, "%s:\n%s\n", g_agent_mode ? "Agent" : "Assistant", plain);
     } else if (kind == CHAT_YOU) {
         sb_addf(&file, "You:\n%s\n\n", utf8);
     } else {
@@ -752,7 +765,7 @@ static void chat_add(int kind, const char *utf8)
         if (kind == CHAT_ANSWER) {
             struct rich_out ro = { { rich_begin, rich_text, rich_end }, 0 };
 
-            rich_lines("Assistant:\n", MD_BOLD);
+            rich_lines(g_agent_mode ? "Agent:\n" : "Assistant:\n", MD_BOLD);
             md_render(utf8, &ro.o, 0);
             rich_lines("\n", 0);
         } else if (kind == CHAT_YOU) {
@@ -831,7 +844,7 @@ static void open_link(const WCHAR *url)
         _snwprintf(line, ARRAYSIZE(line), L"There is no web browser on this computer to open\n%s\n\nInstall "
                    L"Firefox with Download a Program (Get Firefox), then click the address again.", url);
         line[ARRAYSIZE(line) - 1] = 0;
-        MessageBoxW(g_main, line, APP_NAME, MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(g_main, line, app_name(), MB_OK | MB_ICONINFORMATION);
         return;
     }
     if ((arg = wcsstr(cmd, L"%1")))             /* a command with a place for the address */
@@ -846,7 +859,7 @@ static void open_link(const WCHAR *url)
         CloseHandle(pi.hProcess);
         activity_log("opened a link from the chat: %S", url);
     } else {
-        MessageBoxW(g_main, L"The web browser could not be started.", APP_NAME, MB_OK | MB_ICONWARNING);
+        MessageBoxW(g_main, L"The web browser could not be started.", app_name(), MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -934,16 +947,158 @@ static WCHAR *no_prefix(const WCHAR *s)
     return out;
 }
 
+/* A request too long for a task dialog, such as the WinCraft Agent's plan or
+ * result: the question, the details in a box that scrolls, and two buttons.
+ * Enter refuses, like the task dialog's default button. */
+struct review {
+    const WCHAR *title, *text, *yes, *no;
+    HWND label, edit, ok, cancel;
+    BOOL result, done;
+};
+
+static LRESULT CALLBACK review_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct review *r = (struct review *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_CREATE:
+        r = ((CREATESTRUCTW *)lp)->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)r);
+        r->label = CreateWindowExW(0, L"STATIC", r->title, WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 10, 10, hwnd,
+                                   NULL, g_inst, NULL);
+        r->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP |
+                                  ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd, NULL, g_inst, NULL);
+        r->ok = CreateWindowExW(0, L"BUTTON", r->yes, WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                                (HMENU)IDOK, g_inst, NULL);
+        r->cancel = CreateWindowExW(0, L"BUTTON", r->no, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                                    0, 0, 10, 10, hwnd, (HMENU)IDCANCEL, g_inst, NULL);
+        SendMessageW(r->label, WM_SETFONT, (WPARAM)g_font_bold, TRUE);
+        SendMessageW(r->edit, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(r->ok, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(r->cancel, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(r->edit, EM_SETLIMITTEXT, 4 << 20, 0);
+        SetWindowTextW(r->edit, r->text);
+        return 0;
+    case WM_SIZE: {
+        int w = LOWORD(lp), h = HIWORD(lp), pad = 12, bw = 150, bh = 32;
+
+        MoveWindow(r->label, pad, pad, w - 2 * pad, 40, TRUE);
+        MoveWindow(r->edit, pad, pad + 44, w - 2 * pad, h - 3 * pad - 44 - bh, TRUE);
+        MoveWindow(r->cancel, w - pad - bw, h - pad - bh, bw, bh, TRUE);
+        MoveWindow(r->ok, w - 2 * pad - 2 * bw, h - pad - bh, bw, bh, TRUE);
+        return 0;
+    }
+    case WM_GETMINMAXINFO:
+        ((MINMAXINFO *)lp)->ptMinTrackSize.x = 420;
+        ((MINMAXINFO *)lp)->ptMinTrackSize.y = 300;
+        return 0;
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)lp == r->edit) {
+            SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
+    case DM_GETDEFID:
+        return MAKELONG(IDCANCEL, DC_HASDEFID);
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+            r->result = LOWORD(wp) == IDOK;
+            EnableWindow(g_main, TRUE);
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    case WM_CLOSE:
+        EnableWindow(g_main, TRUE);
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        r->done = TRUE;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static BOOL review_dialog(const WCHAR *title, const char *text, const WCHAR *yes, const WCHAR *no)
+{
+    static BOOL registered;
+    struct review r = { title, NULL, yes, no, NULL, NULL, NULL, NULL, FALSE, FALSE };
+    WCHAR *w = w_from_utf8_crlf(text);
+    RECT pr;
+    HWND hwnd;
+    MSG msg;
+    BOOL quit = FALSE;
+
+    if (!registered) {
+        WNDCLASSEXW wc;
+
+        ZeroMemory(&wc, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.hInstance = g_inst;
+        wc.lpfnWndProc = review_proc;
+        wc.lpszClassName = L"WinCraftAssistantReview";
+        wc.hCursor = LoadCursorW(NULL, (const WCHAR *)IDC_ARROW);
+        wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        RegisterClassExW(&wc);
+        registered = TRUE;
+    }
+    r.text = w;
+    GetWindowRect(g_main, &pr);
+    hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"WinCraftAssistantReview", app_name(),
+                           WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, pr.left + 40, pr.top + 40, 680,
+                           560, g_main, NULL, g_inst, &r);
+    if (!hwnd) {
+        free(w);
+        return FALSE;
+    }
+    EnableWindow(g_main, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    SetFocus(r.edit);
+    while (!r.done) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
+            quit = TRUE;
+            break;
+        }
+        if (IsDialogMessageW(hwnd, &msg))
+            continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (quit) {
+        if (!r.done)
+            DestroyWindow(hwnd);
+        PostQuitMessage(0);
+        r.result = FALSE;
+    }
+    EnableWindow(g_main, TRUE);
+    SetForegroundWindow(g_main);
+    free(w);
+    return r.result;
+}
+
 static void ask_permission(struct approval *a)
 {
-    WCHAR *title = w_from_utf8(a->title), *detail = w_from_utf8(a->detail);
-    WCHAR *td_title = no_prefix(title), *td_detail = no_prefix(detail);
+    WCHAR *title, *detail;
     TASKDIALOG_BUTTON buttons[3];
     TASKDIALOGCONFIG tdc;
     task_dialog_fn td = (task_dialog_fn)(void *)GetProcAddress(GetModuleHandleW(L"comctl32.dll"), "TaskDialogIndirect");
     int pressed = 0, n = 0;
     BOOL per_chat = a->tool->tier == TIER_DIAGNOSE || a->tool->tier == TIER_WEB;
+    WCHAR *td_title, *td_detail;
 
+    if (a->tool->tier == TIER_AGENT || strlen(a->detail) > 900) {
+        BOOL agent = a->tool->tier == TIER_AGENT;
+
+        title = w_from_utf8(a->title);
+        a->ok = review_dialog(title, a->detail, agent ? L"&Approve" : L"&Allow", agent ? L"&Refuse" : L"&Don't allow");
+        activity_log("%s %s: %s", a->ok ? "allowed" : "refused", a->tool->name, a->title);
+        free(title);
+        return;
+    }
+    title = w_from_utf8(a->title);
+    detail = w_from_utf8(a->detail);
+    td_title = no_prefix(title);
+    td_detail = no_prefix(detail);
     buttons[n].nButtonID = 100;
     buttons[n++].pszButtonText = L"&Allow";
     if (per_chat) {
@@ -957,7 +1112,7 @@ static void ask_permission(struct approval *a)
     tdc.hwndParent = g_main;
     tdc.hInstance = g_inst;
     tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-    tdc.pszWindowTitle = APP_NAME;
+    tdc.pszWindowTitle = app_name();
     tdc.pszMainIcon = per_chat ? TD_INFORMATION_ICON : TD_WARNING_ICON;
     tdc.pszMainInstruction = td_title;
     tdc.pszContent = td_detail;
@@ -969,7 +1124,7 @@ static void ask_permission(struct approval *a)
 
         _snwprintf(text, ARRAYSIZE(text), L"%s\n\n%s", title, detail);
         text[ARRAYSIZE(text) - 1] = 0;
-        pressed = MessageBoxW(g_main, text, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES ? 100 : 102;
+        pressed = MessageBoxW(g_main, text, app_name(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES ? 100 : 102;
     }
     a->ok = pressed == 100 || pressed == 101;
     if (pressed == 101 && a->tool->tier == TIER_WEB)
@@ -1093,7 +1248,7 @@ static int ask_model(llm_reply *r)
 static DWORD WINAPI chat_thread(void *arg)
 {
     char *question = arg;
-    int step, ok;
+    int step, ok, max_steps = g_agent_mode ? AGENT_STEPS : MAX_STEPS;
     WCHAR host[256];
 
     llm_reset_cancel();
@@ -1104,7 +1259,7 @@ static DWORD WINAPI chat_thread(void *arg)
     }
     llm_add_user(&g_cfg, g_messages, question);
     lstrcpynW(host, g_provider_host, ARRAYSIZE(host));
-    for (step = 0; step < MAX_STEPS; step++) {
+    for (step = 0; step < max_steps; step++) {
         llm_reply r;
         char *results[16], *label;
         int i;
@@ -1185,8 +1340,9 @@ static DWORD WINAPI chat_thread(void *arg)
             close_turn("(Stopped by the person.)");
             break;
         }
-        if (step == MAX_STEPS - 1) {
-            post_chat(CHAT_TEXT, "(The assistant stopped here: it used %d steps for this question.)\n\n", MAX_STEPS);
+        if (step == max_steps - 1) {
+            post_chat(CHAT_TEXT, "(The %s stopped here: it used %d steps for this %s.)\n\n",
+                      g_agent_mode ? "agent" : "assistant", max_steps, g_agent_mode ? "task" : "question");
             close_turn("(Stopped after too many steps.)");
         }
     }
@@ -1210,6 +1366,10 @@ static void new_chat(void)
     g_diag_allowed = g_web_allowed = FALSE;
     g_tok_in = g_tok_out = 0;
     g_chat_file[0] = 0;
+    if (g_agent_mode) {
+        agent_end();
+        agent_begin();
+    }
     if (app_data_dir(dir)) {
         PathAppendW(dir, L"chats");
         SHCreateDirectoryExW(NULL, dir, NULL);
@@ -1223,14 +1383,66 @@ static void new_chat(void)
     {
         char intro[1536];
 
-        snprintf(intro, sizeof(intro),
-                 "Ask about WinCraft OS or this computer: why a program does not start or stops "
-                 "responding, what is installed, how something works here. The assistant looks things "
-                 "up on this computer as it goes and lists what it looked at. It changes nothing "
-                 "without asking you first.\n\nModel: %.120S at %.120S\n\n", g_cfg.model, host);
+        if (g_agent_mode)
+            snprintf(intro, sizeof(intro),
+                     "The WinCraft Agent adds to WinCraft, on this computer, something it does not do yet: a "
+                     "setting it lacks, something to set up at every start. It shows you its plan first. Then it "
+                     "works as administrator in a sandbox, a copy of the system that is thrown away, and asks "
+                     "you before adding anything. You can answer it or add details below.\n\n"
+                     "Model: %.120S at %.120S\n\n", g_cfg.model, host);
+        else
+            snprintf(intro, sizeof(intro),
+                     "Ask about WinCraft OS or this computer: why a program does not start or stops "
+                     "responding, what is installed, how something works here. The assistant looks things "
+                     "up on this computer as it goes and lists what it looked at. It changes nothing "
+                     "without asking you first.\n\nModel: %.120S at %.120S\n\n", g_cfg.model, host);
         chat_add(CHAT_QUIET, intro);
     }
     update_status();
+}
+
+static void start_turn(char *q)
+{
+    HANDLE t;
+
+    g_busy = TRUE;
+    EnableWindow(g_send, FALSE);
+    EnableWindow(g_stop, TRUE);
+    t = CreateThread(NULL, 0, chat_thread, q, 0, NULL);
+    if (t)
+        CloseHandle(t);
+    else {
+        free(q);
+        g_busy = FALSE;
+    }
+}
+
+/* The task WinCraft Assistant handed over (ask_agent in tools.c), read once. */
+static char *take_agent_task(void)
+{
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    HANDLE h;
+    DWORD size, got = 0;
+    char *s = NULL;
+
+    if (!app_data_dir(dir))
+        return NULL;
+    PathCombineW(path, dir, L"agent-task.txt");
+    h = CreateFileW(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return NULL;
+    size = GetFileSize(h, NULL);
+    if (size && size <= 16384 && (s = malloc(size + 1))) {
+        if (ReadFile(h, s, size, &got, NULL))
+            s[got] = 0;
+        else {
+            free(s);
+            s = NULL;
+        }
+    }
+    CloseHandle(h);
+    DeleteFileW(path);
+    return s;
 }
 
 static void send_question(void)
@@ -1238,7 +1450,6 @@ static void send_question(void)
     int len = GetWindowTextLengthW(g_input);
     WCHAR *w;
     char *q;
-    HANDLE t;
 
     if (g_busy || !len)
         return;
@@ -1253,16 +1464,7 @@ static void send_question(void)
     free(w);
     SetWindowTextW(g_input, L"");
     chat_add(CHAT_YOU, q);
-    g_busy = TRUE;
-    EnableWindow(g_send, FALSE);
-    EnableWindow(g_stop, TRUE);
-    t = CreateThread(NULL, 0, chat_thread, q, 0, NULL);
-    if (t)
-        CloseHandle(t);
-    else {
-        free(q);
-        g_busy = FALSE;
-    }
+    start_turn(q);
 }
 
 static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -1313,14 +1515,18 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE: {
         HMENU bar = CreateMenu(), chat = CreatePopupMenu(), help = CreatePopupMenu();
 
-        AppendMenuW(chat, MF_STRING, IDM_NEW, L"&New chat\tCtrl+N");
-        AppendMenuW(chat, MF_STRING, IDM_SEE, L"What the assistant can &see...");
+        if (!g_agent_mode) {        /* the agent's window has one task, and the assistant's settings */
+            AppendMenuW(chat, MF_STRING, IDM_NEW, L"&New chat\tCtrl+N");
+            AppendMenuW(chat, MF_STRING, IDM_SEE, L"What the assistant can &see...");
+        }
         AppendMenuW(chat, MF_STRING, IDM_ACTIVITY, L"&Activity log...");
         AppendMenuW(chat, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(chat, MF_STRING, IDM_SETTINGS, L"Se&ttings...");
-        AppendMenuW(chat, MF_SEPARATOR, 0, NULL);
+        if (!g_agent_mode) {
+            AppendMenuW(chat, MF_STRING, IDM_SETTINGS, L"Se&ttings...");
+            AppendMenuW(chat, MF_SEPARATOR, 0, NULL);
+        }
         AppendMenuW(chat, MF_STRING, IDM_EXIT, L"&Close");
-        AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About WinCraft Assistant");
+        AppendMenuW(help, MF_STRING, IDM_ABOUT, g_agent_mode ? L"&About WinCraft Agent" : L"&About WinCraft Assistant");
         AppendMenuW(bar, MF_POPUP, (UINT_PTR)chat, L"&Chat");
         AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
         SetMenu(hwnd, bar);
@@ -1390,7 +1596,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetFocus(g_input);
             return 0;
         case IDM_NEW:
-            if (!g_busy)
+            if (!g_busy && !g_agent_mode)
                 new_chat();
             return 0;
         case IDM_SEE:
@@ -1400,16 +1606,23 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             show_activity();
             return 0;
         case IDM_SETTINGS:
-            reconfigure();
+            if (!g_agent_mode)
+                reconfigure();
             return 0;
         case IDM_EXIT:
             DestroyWindow(hwnd);
             return 0;
         case IDM_ABOUT:
-            MessageBoxW(hwnd, L"WinCraft Assistant " WC_VERSION L"\n\nPart of WinCraft OS. MIT License.\n\n"
-                        L"It answers with the model you chose in Settings, and knows WinCraft from the "
-                        L"documentation built into this version of the system.",
-                        L"About WinCraft Assistant", MB_OK | MB_ICONINFORMATION);
+            if (g_agent_mode)
+                MessageBoxW(hwnd, L"WinCraft Agent " WC_VERSION L"\n\nPart of WinCraft OS. MIT License.\n\n"
+                            L"It builds features for this computer with the model chosen in WinCraft Assistant's "
+                            L"settings, in a sandbox, and adds them only when you approve.",
+                            L"About WinCraft Agent", MB_OK | MB_ICONINFORMATION);
+            else
+                MessageBoxW(hwnd, L"WinCraft Assistant " WC_VERSION L"\n\nPart of WinCraft OS. MIT License.\n\n"
+                            L"It answers with the model you chose in Settings, and knows WinCraft from the "
+                            L"documentation built into this version of the system.",
+                            L"About WinCraft Assistant", MB_OK | MB_ICONINFORMATION);
             return 0;
         }
         break;
@@ -1483,10 +1696,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     BOOL have;
 
     g_inst = inst;
+    g_agent_mode = StrStrIW(cmdline, L"/agent") != NULL;
     g_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    mutex = CreateMutexW(NULL, TRUE, L"WinCraftAssistant");
+    mutex = CreateMutexW(NULL, TRUE, main_class());
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND other = FindWindowW(L"WinCraftAssistant", NULL);
+        HWND other = FindWindowW(main_class(), NULL);
 
         if (other) {
             ShowWindow(other, SW_RESTORE);
@@ -1500,6 +1714,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     g_font_bold = make_font(10, FW_SEMIBOLD);
 
     have = load_config(&g_cfg);
+    if (g_agent_mode && (!have || (preset_needs_key(g_cfg.preset) && !g_cfg.key[0]))) {
+        MessageBoxW(NULL, L"The WinCraft Agent uses WinCraft Assistant's AI provider. Set up WinCraft Assistant "
+                    L"first.", L"WinCraft Agent", MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
     if (!have || StrStrIW(cmdline, L"/settings") ||
         (preset_needs_key(g_cfg.preset) && !g_cfg.key[0])) {
         if (!setup_window(NULL, !have))
@@ -1509,19 +1728,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     }
     llm_host(&g_cfg, g_provider_host, ARRAYSIZE(g_provider_host), &g_provider_port);
     g_tools_json = tools_json(g_cfg.format, g_cfg.web_pages);
-    activity_log("opened; provider %S, model %S", g_provider_host, g_cfg.model);
+    activity_log("%s opened; provider %S, model %S", g_agent_mode ? "WinCraft Agent" : "assistant",
+                 g_provider_host, g_cfg.model);
 
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
     wc.hInstance = inst;
     wc.lpfnWndProc = main_proc;
-    wc.lpszClassName = L"WinCraftAssistant";
+    wc.lpszClassName = main_class();
     wc.hCursor = LoadCursorW(NULL, (const WCHAR *)IDC_ARROW);
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     RegisterClassExW(&wc);
-    g_main = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW,
-                             (GetSystemMetrics(SM_CXSCREEN) - 760) / 2, (GetSystemMetrics(SM_CYSCREEN) - 600) / 3,
+    /* the agent's window opens beside the assistant's, not on it */
+    g_main = CreateWindowExW(0, wc.lpszClassName, app_name(), WS_OVERLAPPEDWINDOW,
+                             (GetSystemMetrics(SM_CXSCREEN) - 760) / 2 + (g_agent_mode ? 60 : 0),
+                             (GetSystemMetrics(SM_CYSCREEN) - 600) / 3 + (g_agent_mode ? 40 : 0),
                              760, 600, NULL, NULL, inst, NULL);
     if (!g_main)
         return 1;
@@ -1529,6 +1751,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     ShowWindow(g_main, show);
     UpdateWindow(g_main);
     SetFocus(g_input);
+    if (g_agent_mode) {
+        char *task = take_agent_task();
+
+        if (task) {
+            sb_t q;
+
+            sb_init(&q);
+            sb_addf(&q, "Task from WinCraft Assistant:\n\n%s", task);
+            chat_add(CHAT_YOU, q.s);
+            start_turn(sb_take(&q));
+            free(task);
+        }
+    }
     haccel = CreateAcceleratorTableW(accel, ARRAYSIZE(accel));
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (TranslateAcceleratorW(g_main, haccel, &msg))
@@ -1536,6 +1771,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (g_agent_mode)
+        agent_end();            /* the sandbox goes, with all it holds */
     SecureZeroMemory(g_cfg.key, sizeof(g_cfg.key));
     CloseHandle(mutex);
     return 0;
