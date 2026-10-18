@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.2 — 2026-10-18
+
+Installing and using WinCraft, improved after a fresh install from start to
+finish.
+
+- **An installed WinCraft starts from its disk**, even with the installation
+  medium still in the computer. Its boot menu names its own two partitions by
+  UUID; before, it looked for a label that the medium carries too. An
+  installation CD is ejected as the computer restarts.
+- **The installer can leave room on the disk.** *Space for WinCraft* gives it
+  less than the whole disk, from 5 GB, and leaves the rest empty, and *Data
+  partition name* names its data partition. The whole disk is still erased
+  first. When there is only one disk, it is selected already.
+- ***Install WinCraft OS* only appears where it can be used**: on the
+  desktop and in the Start menu of a session started from the installation
+  medium, no longer on an installed system.
+- **Start menu folders.** A program that installs several shortcuts in a
+  folder of its own gets one Start menu entry, which opens in place; a folder
+  with a single shortcut shows just that program. Search still finds what is
+  inside folders.
+- **Sound works**, tested in a virtual machine: SuperTuxKart 1.5 plays with
+  its sound on the host's speakers.
+- An installed disk is now tested on UEFI firmware too.
+- For a virtual machine started with `./wc run` (building from source):
+  - **3D acceleration**: a virtio GPU with virgl draws the guest's OpenGL on
+    the host's graphics card, so SuperTuxKart plays well. The guest takes the
+    window's size when it starts. `--no-gl` gives the old VGA adapter.
+  - **`--gamepads`** hands the game controllers connected when the VM starts
+    to it; Windows programs see an Xbox controller as an XInput gamepad.
+  - **The VM boots through its firmware, disk first**, like a computer:
+    install, restart, and the installed system comes up. `--shell` adds the
+    development root shell without changing that.
+- The kernel, Wine and the Arch packages are those of 0.6.1.
+
 ## 0.6.1 — 2026-10-17
 
 Security fixes, and the first release built from a pinned package snapshot.

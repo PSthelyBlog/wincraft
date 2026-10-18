@@ -33,7 +33,7 @@
 #include <urlmon.h>
 #include <wchar.h>
 
-#define WC_VERSION      L"0.6.1"
+#define WC_VERSION      L"0.6.2"
 
 /* ---- metrics ---- */
 #define BAR_H           g_bar_h

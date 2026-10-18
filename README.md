@@ -12,18 +12,18 @@ Start menu, and there is nothing else on the disk.
 - a built-in assistant that knows WinCraft and can look at this computer,
   using an AI model you choose (optional)
 
-**Status: 0.6.1, a working preview.** Read [What it is not](#what-it-is-not)
+**Status: 0.6.2, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
 
 ![The WinCraft desktop: Start menu, Notepad and Minesweeper](docs/screenshot.png)
 
 ## Download
 
-Get `wincraft-0.6.1-x86_64.iso` from the [releases page](../../releases) and
+Get `wincraft-0.6.2-x86_64.iso` from the [releases page](../../releases) and
 check it against the `.sha256` file published next to it:
 
 ```sh
-sha256sum -c wincraft-0.6.1-x86_64.iso.sha256
+sha256sum -c wincraft-0.6.2-x86_64.iso.sha256
 ```
 
 Then boot it in a virtual machine. This is the configuration it was tested
@@ -32,7 +32,7 @@ with (4 GB of RAM, 4 CPUs):
 ```sh
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -device VGA -device qemu-xhci -device usb-tablet -device usb-kbd \
-    -nic user,model=virtio-net-pci -cdrom wincraft-0.6.1-x86_64.iso
+    -nic user,model=virtio-net-pci -cdrom wincraft-0.6.2-x86_64.iso
 ```
 
 To share the clipboard (text, both ways) with the VM, add QEMU's clipboard
@@ -85,9 +85,9 @@ Verified in QEMU, booting the ISO, unless noted:
   its own folder gets one folder entry in the Start menu, which opens in
   place; search still finds what is inside.
 - Networking: wired, DHCP, DNS; HTTPS with certificate validation.
-- **Install to disk**, boot from the installed disk (BIOS), files persisting
-  across reboots. After the installation the computer starts the disk even
-  with the installation ISO still attached.
+- **Install to disk**, boot from the installed disk (BIOS and UEFI), files
+  persisting across reboots. After the installation the computer starts the
+  disk even with the installation ISO still attached.
 - Shut down and restart from the Start menu.
 - Third-party software (tested in the native desktop session, `./wc desktop`):
   the **7-Zip** installer downloaded with *Download a Program*, installed,
@@ -144,9 +144,8 @@ Be clear-eyed about these before you depend on it:
   rather than inside the taskbar.
 - The clock is UTC and the keyboard layout is US unless set at boot
   (`wc.kbd=fr`); there is no settings panel for either yet.
-- Untested: real hardware (its sound included), booting from a USB stick,
-  UEFI boot of an *installed* disk. Secure Boot is not supported (the boot loader is
-  unsigned).
+- Untested: real hardware (its sound included), booting from a USB stick.
+  Secure Boot is not supported (the boot loader is unsigned).
 - It has had no security review. Treat it as a single-user machine.
 
 ## WinCraft Assistant
@@ -200,7 +199,7 @@ network; WinCraft itself sends nothing anywhere until you set it up.
 After [building](#build-it), the same ISO is in `out/`:
 
 ```sh
-./wc run                 # boots out/wincraft-0.6.1-x86_64.iso in a QEMU window
+./wc run                 # boots out/wincraft-0.6.2-x86_64.iso in a QEMU window
 ./wc run --uefi          # same, UEFI firmware
 ./wc run --disk build/vm/disk.qcow2:20G     # with a blank disk to install to
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
@@ -231,7 +230,7 @@ the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
 
 To put it on a USB stick, write the ISO to the whole device
-(`dd if=out/wincraft-0.6.1-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
+(`dd if=out/wincraft-0.6.2-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
 
 ### Boot options
 
