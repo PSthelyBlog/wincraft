@@ -546,11 +546,40 @@ json *json_parse(const char *text, size_t len)
  * Writing
  * ====================================================================== */
 
+/* The length of the valid UTF-8 sequence at p (2 to 4), or 0 if it is not
+ * one: a stray continuation byte, a cut or overlong sequence, a surrogate,
+ * or a code point beyond U+10FFFF. */
+static int utf8_len(const unsigned char *p)
+{
+    int n, i;
+
+    if (p[0] >= 0xc2 && p[0] <= 0xdf)
+        n = 2;
+    else if (p[0] >= 0xe0 && p[0] <= 0xef)
+        n = 3;
+    else if (p[0] >= 0xf0 && p[0] <= 0xf4)
+        n = 4;
+    else
+        return 0;
+    for (i = 1; i < n; i++)
+        if ((p[i] & 0xc0) != 0x80)
+            return 0;
+    if ((p[0] == 0xe0 && p[1] < 0xa0) ||        /* overlong */
+        (p[0] == 0xed && p[1] >= 0xa0) ||       /* surrogate */
+        (p[0] == 0xf0 && p[1] < 0x90) ||        /* overlong */
+        (p[0] == 0xf4 && p[1] >= 0x90))         /* beyond U+10FFFF */
+        return 0;
+    return n;
+}
+
+/* Text from programs, logs and pages may hold any bytes, and one that is not
+ * UTF-8 makes the whole request invalid JSON: each such byte becomes U+FFFD. */
 void json_quote(sb_t *b, const char *s)
 {
     sb_addc(b, '"');
     for (; s && *s; s++) {
         unsigned char c = (unsigned char)*s;
+        int n;
 
         switch (c) {
         case '"':  sb_add(b, "\\\""); break;
@@ -561,8 +590,13 @@ void json_quote(sb_t *b, const char *s)
         default:
             if (c < 0x20)
                 sb_addf(b, "\\u%04x", c);
-            else
+            else if (c < 0x80)
                 sb_addc(b, (char)c);
+            else if ((n = utf8_len((const unsigned char *)s))) {
+                sb_addn(b, s, n);
+                s += n - 1;
+            } else
+                sb_add(b, "\\ufffd");
         }
     }
     sb_addc(b, '"');
