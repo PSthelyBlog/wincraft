@@ -793,6 +793,71 @@ static void boot_options(sb_t *b)
         sb_add(b, "(none)");
 }
 
+/* WinCraft's Linux services, which no Windows API shows: wcinit's lists
+ * (/etc/wincraft/services, and the features' services.d gathered by rc.boot
+ * in /run/wincraft/services), with the state wcinit records for each in
+ * /run/wincraft/services.status ("<name> <pid> <respawn|once>"). */
+static void services_summary(sb_t *b)
+{
+    static const char *lists[] = { "/etc/wincraft/services", "/run/wincraft/services" };
+    char *status = read_unix_file("/run/wincraft/services.status", 16384);
+    unsigned i;
+
+    for (i = 0; i < ARRAYSIZE(lists); i++) {
+        char *text = read_unix_file(lists[i], 64 * 1024), *line, *save = NULL;
+
+        for (line = text ? strtok_r(text, "\n", &save) : NULL; line; line = strtok_r(NULL, "\n", &save)) {
+            char name[48], mode[16], key[56], *at_status;
+            const char *state = "state unknown";
+            int at = 0, pid = 0;
+
+            if (sscanf(line, " %47s %15s %n", name, mode, &at) < 2 || name[0] == '#' || !at)
+                continue;
+            snprintf(key, sizeof(key), "%s ", name);
+            for (at_status = status; at_status && (at_status = strstr(at_status, key)); at_status++)
+                if (at_status == status || at_status[-1] == '\n')
+                    break;
+            if (at_status && sscanf(at_status + strlen(key), "%d", &pid) == 1)
+                state = pid > 0 ? "running" : !strcmp(mode, "once") ? "ran once at start" :
+                        "NOT RUNNING (wcinit starts it again)";
+            sb_addf(b, "- %s: %s: %.90s\n", name, state, line + at);
+        }
+        free(text);
+    }
+    free(status);
+}
+
+/* The features added to this computer (README, "Features"). */
+static void features_summary(sb_t *b)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(UNIX_ROOT L"\\var\\lib\\wincraft\\features\\*", &fd);
+    int n = 0;
+
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            char path[160], *conf, *name;
+            WCHAR marker[MAX_PATH];
+
+            if (fd.cFileName[0] == L'.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                continue;
+            snprintf(path, sizeof(path), "/var/lib/wincraft/features/%.48S/feature.conf", fd.cFileName);
+            conf = read_unix_file(path, 8192);
+            name = conf ? strstr(conf, "name=") : NULL;
+            if (name && name != conf && name[-1] != '\n')
+                name = NULL;
+            _snwprintf(marker, MAX_PATH, UNIX_ROOT L"\\var\\lib\\wincraft\\features\\%s\\enabled", fd.cFileName);
+            marker[MAX_PATH - 1] = 0;
+            sb_addf(b, "%s%S (\"%.*s\", %s)", n++ ? "; " : "", fd.cFileName,
+                    name ? (int)strcspn(name + 5, "\r\n") : 1, name ? name + 5 : "?",
+                    GetFileAttributesW(marker) != INVALID_FILE_ATTRIBUTES ? "enabled" : "disabled");
+            free(conf);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    sb_add(b, n ? ".\n" : "none.\n");
+}
+
 char *system_snapshot(void)
 {
     sb_t b;
@@ -803,6 +868,9 @@ char *system_snapshot(void)
     int cpus = 0;
     const char *(*wine_version)(void);
     TIME_ZONE_INFORMATION tz;
+    DWORD tzid;
+    SYSTEMTIME now;
+    LONG bias;
 
     sb_init(&b);
     sb_addf(&b, "System: %s, %s.\n", os_name(name, sizeof(name)),
@@ -838,18 +906,34 @@ char *system_snapshot(void)
                 live ? " (in memory)" : "");
     }
     kbd = read_unix_file("/run/wincraft/kbd", 64);
-    GetTimeZoneInformation(&tz);
-    sb_addf(&b, "Screen %dx%d; keyboard layout %s; time zone ", GetSystemMetrics(SM_CXSCREEN),
+    sb_addf(&b, "Screen %dx%d; keyboard layout %s.\n", GetSystemMetrics(SM_CXSCREEN),
             GetSystemMetrics(SM_CYSCREEN), kbd && *kbd ? trim(kbd) : "us (default)");
-    sb_addw(&b, tz.StandardName[0] ? tz.StandardName : L"UTC");
-    sb_add(&b, ".\n");
     free(kbd);
+    /* the clock as programs see it: Wine takes the zone from /etc/localtime */
+    tzid = GetTimeZoneInformation(&tz);
+    bias = tz.Bias + (tzid == TIME_ZONE_ID_DAYLIGHT ? tz.DaylightBias :
+                      tzid == TIME_ZONE_ID_STANDARD ? tz.StandardBias : 0);
+    GetLocalTime(&now);
+    sb_addf(&b, "Clock: %04d-%02d-%02d %02d:%02d local time, UTC%c%ld", now.wYear, now.wMonth, now.wDay,
+            now.wHour, now.wMinute, bias > 0 ? '-' : '+', labs(bias) / 60);
+    if (labs(bias) % 60)
+        sb_addf(&b, ":%02ld", labs(bias) % 60);
+    sb_add(&b, ", time zone ");
+    sb_addw(&b, tzid == TIME_ZONE_ID_DAYLIGHT && tz.DaylightName[0] ? tz.DaylightName :
+                tz.StandardName[0] ? tz.StandardName : L"UTC");
+    sb_add(&b, ".\n");
 
     sb_add(&b, "Network: ");
     network_summary(&b, FALSE);
 
     wine_version = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
     sb_addf(&b, "Wine %s (64- and 32-bit Windows programs).\n", wine_version ? wine_version() : "?");
+    sb_add(&b, "Features added to this computer: ");
+    features_summary(&b);
+
+    sb_add(&b, "\nWinCraft services (the Linux side, started and restarted by wcinit; the running programs "
+               "below and list_programs show only Windows programs):\n");
+    services_summary(&b);
 
     sb_add(&b, "\nInstalled programs:\n");
     list_installed(&b);
@@ -1571,7 +1655,9 @@ const tool_def g_tools[] = {
       "{\"type\":\"object\",\"properties\":{}}" },
     { "list_programs", TIER_READ,
       "List the running Windows programs with their process id (pid), memory use, file, window titles "
-      "and whether a window is not responding. Set include_system to also list Wine's own processes.",
+      "and whether a window is not responding. Set include_system to also list Wine's own processes. "
+      "WinCraft's Linux services (time sync, network, logging) never appear here: the system overview "
+      "lists them and whether each is running.",
       "{\"type\":\"object\",\"properties\":{\"include_system\":{\"type\":\"boolean\"}}}" },
     { "list_installed_programs", TIER_READ,
       "List installed Windows programs (Add or Remove Programs) and the Start menu entries.",

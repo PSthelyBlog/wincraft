@@ -90,6 +90,9 @@ Verified in QEMU, booting the ISO, unless noted:
   its own folder gets one folder entry in the Start menu, which opens in
   place; search still finds what is inside.
 - Networking: wired, DHCP, DNS; HTTPS with certificate validation.
+- **The clock follows internet time**: the `time` service runs `ntpd`
+  against `pool.ntp.org` once the network is up, and corrects a clock that
+  is wrong.
 - **Install to disk**, boot from the installed disk (BIOS and UEFI), files
   persisting across reboots. After the installation the computer starts the
   disk even with the installation ISO still attached.
@@ -157,9 +160,9 @@ Be clear-eyed about these before you depend on it:
   Paint.NET 5.1's installer crashes while checking the graphics hardware.
 - Notification-area icons appear in a small floating window above the clock
   rather than inside the taskbar.
-- The clock is UTC and the keyboard layout is US unless set at boot
+- The time zone is UTC and the keyboard layout is US unless set at boot
   (`wc.kbd=fr`); there is no settings panel for either yet. The WinCraft
-  Agent can add a feature that keeps a layout.
+  Agent can add a feature that keeps a layout or a time zone.
 - Untested: real hardware (its sound included), booting from a USB stick.
   Secure Boot is not supported (the boot loader is unsigned).
 - It has had no security review. Treat it as a single-user machine.
