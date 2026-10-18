@@ -1,0 +1,4 @@
+Services that features add: *.service files with lines in the format of
+/etc/wincraft/services, "<name> <respawn|once> <command>", supervised by
+wcinit from the next boot. Files here are links that the feature helper
+makes; see README, "Features".

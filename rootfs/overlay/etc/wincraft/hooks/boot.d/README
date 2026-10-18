@@ -1,0 +1,4 @@
+Boot hooks that features add: *.sh scripts run as root by rc.boot, in name
+order, before the services start, 30 seconds each. Their output and how
+each ended go to /run/log/hooks.log. Files here are links that the feature
+helper makes; see README, "Features".

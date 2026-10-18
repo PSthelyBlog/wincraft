@@ -1,0 +1,3 @@
+Features added to this computer, one folder each, owned by root. They are
+enabled, disabled and removed with the WinCraft Features window (the
+helper /usr/lib/wincraft/priv.d/feature); see README, "Features".

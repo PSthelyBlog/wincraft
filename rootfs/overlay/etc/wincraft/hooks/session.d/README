@@ -1,0 +1,4 @@
+Session hooks that features add: *.sh scripts run as the user, with the
+desktop's environment, when the display is up and before the shell starts;
+in name order, 30 seconds each. Their output goes to the desktop log. Files
+here are links that the feature helper makes; see README, "Features".

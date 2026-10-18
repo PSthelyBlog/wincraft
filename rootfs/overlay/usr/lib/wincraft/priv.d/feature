@@ -1,0 +1,119 @@
+#!/bin/sh
+# Enable, disable or remove a feature. Runs as root, started by wcinit for the
+# WinCraft Features window: "wcctl priv feature enable|disable|remove <id>".
+#
+# A feature is a folder /var/lib/wincraft/features/<id>/:
+#   feature.conf                     name=, description=, created=, by=, version=
+#   files/settings.d/*.conf          linked into /etc/wincraft/settings.d/
+#   files/hooks/boot.d/*.sh          linked into /etc/wincraft/hooks/boot.d/
+#   files/hooks/session.d/*.sh       linked into /etc/wincraft/hooks/session.d/
+#   files/services.d/*.service       linked into /etc/wincraft/services.d/
+#   files/registry.d/*.reg           linked into /etc/wincraft/registry.d/
+#   enabled                          present while the feature is enabled
+# Each link's name carries the feature's id after the order prefix, so that
+# features never collide: files/hooks/boot.d/50-apply.sh of "keyboard" becomes
+# /etc/wincraft/hooks/boot.d/50-keyboard-apply.sh. Nothing of a feature is
+# written anywhere but its own folder and those links, so no system file is
+# ever replaced and features survive updates of the system image.
+#
+# Anyone may ask for this helper, and an enabled feature runs as root at every
+# boot: only a folder that root owns, with nothing in it that anyone else can
+# write and no symbolic links, is accepted. Features are made by root.
+#
+# Progress goes to /run/wincraft/feature.status, whose last line is "done" or
+# "error: <reason>"; every change is recorded in /var/lib/wincraft/features.log.
+PATH=/usr/bin
+base=/var/lib/wincraft/features
+journal=/var/lib/wincraft/features.log
+status=/run/wincraft/feature.status
+ext=/etc/wincraft
+areas="settings.d:.conf hooks/boot.d:.sh hooks/session.d:.sh services.d:.service registry.d:.reg"
+
+say()  { echo "$*" >> "$status"; }
+fail() { say "error: $*"; exit 1; }
+note() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$journal"; }
+
+mkdir -p /run/wincraft
+exec 9> /run/wincraft/feature.lock
+flock -n 9 || exit 1                     # one change at a time
+: > "$status"
+chmod 644 "$status"
+
+action=$1 id=$2
+case "$action" in enable|disable|remove) ;; *) fail "unknown action: $action" ;; esac
+case "$id" in ''|-*|*[!a-z0-9-]*) fail "invalid feature name" ;; esac
+[ ${#id} -le 40 ] || fail "the feature name is too long"
+dir=$base/$id
+
+# root's, and writable by nobody else
+trusted() {
+    [ "$(stat -c %u "$1")" = 0 ] || return 1
+    case "$(stat -c %A "$1")" in ?????w????|????????w?) return 1 ;; esac
+}
+for d in /var/lib/wincraft "$base"; do
+    trusted "$d" || fail "$d is not root's alone"
+done
+[ -d "$dir" ] && [ ! -L "$dir" ] || fail "there is no feature called $id"
+
+# remove every link into this feature's folder
+unlink_all() {
+    for spec in $areas; do
+        for link in "$ext/${spec%%:*}"/*; do
+            [ -L "$link" ] || continue
+            case "$(readlink "$link")" in "$dir"/*) rm -f "$link" ;; esac
+        done
+    done
+}
+
+# 50-apply.sh -> 50-<id>-apply.sh; apply.sh -> 50-<id>-apply.sh
+link_name() {
+    case "$1" in
+        [0-9][0-9]-*) echo "${1%%-*}-$id-${1#*-}" ;;
+        *)            echo "50-$id-$1" ;;
+    esac
+}
+
+case "$action" in
+enable)
+    say "Checking $id"
+    [ -n "$(find "$dir" -type l)" ] && fail "the feature contains symbolic links"
+    [ -n "$(find "$dir" ! -user 0)" ] && fail "the feature has files root does not own"
+    [ -n "$(find "$dir" -perm -020 -o -perm -002)" ] && fail "the feature has files others can change"
+    for spec in $areas; do
+        area=${spec%%:*} suffix=${spec#*:}
+        for f in "$dir/files/$area"/*; do
+            [ -e "$f" ] || continue
+            name=${f##*/}
+            [ -f "$f" ] || fail "files/$area/$name is not a file"
+            case "$name" in .*|*[!A-Za-z0-9._-]*) fail "files/$area/$name: invalid file name" ;; esac
+            case "$name" in *"$suffix") ;; *) fail "files/$area/$name should end in $suffix" ;; esac
+        done
+    done
+    say "Enabling $id"
+    unlink_all
+    for spec in $areas; do
+        area=${spec%%:*}
+        for f in "$dir/files/$area"/*; do
+            [ -f "$f" ] || continue
+            mkdir -p "$ext/$area"
+            ln -s "$f" "$ext/$area/$(link_name "${f##*/}")" || { unlink_all; fail "could not link ${f##*/}"; }
+        done
+    done
+    touch "$dir/enabled"
+    note "enable $id"
+    ;;
+disable)
+    say "Disabling $id"
+    unlink_all
+    rm -f "$dir/enabled"
+    note "disable $id"
+    ;;
+remove)
+    say "Removing $id"
+    unlink_all
+    rm -rf "$dir" || fail "could not remove $dir"
+    note "remove $id"
+    ;;
+esac
+sync
+say "done"

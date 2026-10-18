@@ -1,0 +1,25 @@
+#!/bin/sh
+# setting KEY [DEFAULT] - print a WinCraft setting.
+#
+# Settings are "key=value" lines in /etc/wincraft/settings.d/*.conf, which
+# features add (README, "Features"). The files are read in name order and the
+# last value given for KEY wins. Prints DEFAULT, and exits 1, when no file sets
+# KEY, and also with the boot option wc.nofeatures, which ignores the folder.
+PATH=/usr/bin
+key=$1 default=$2
+case "$key" in ''|*[!a-z0-9._-]*) echo "setting: invalid key: $key" >&2; exit 2 ;; esac
+
+set -- /etc/wincraft/settings.d/*.conf
+if [ -f "$1" ] && ! grep -q -w wc.nofeatures /proc/cmdline 2>/dev/null; then
+    value=$(awk -v k="$key" '
+        /^[ \t]*(#|$)/ { next }
+        {
+            i = index($0, "="); if (!i) next
+            name = substr($0, 1, i - 1); gsub(/^[ \t]+|[ \t]+$/, "", name)
+            if (name != k) next
+            v = substr($0, i + 1); gsub(/^[ \t]+|[ \t]+$/, "", v); found = 1
+        }
+        END { if (found) print v; else exit 1 }' "$@") && { printf '%s\n' "$value"; exit 0; }
+fi
+printf '%s\n' "$default"
+exit 1

@@ -1,0 +1,31 @@
+#!/bin/sh
+# run-hooks boot|session - run the features' hooks for one stage.
+#
+#   boot     /etc/wincraft/hooks/boot.d/*.sh, as root, from rc.boot, before
+#            the services start
+#   session  /etc/wincraft/hooks/session.d/*.sh, as the user with the
+#            desktop's environment, from the desktop script, once the display
+#            is up and before the shell starts
+#
+# Hooks run in name order, each with 30 seconds. What they print, and a line
+# saying how each ended, goes to standard output: /run/log/hooks.log for boot
+# hooks, the desktop log for session hooks. A hook that fails or hangs is
+# reported and skipped; it never stops the computer from starting. Nothing runs
+# with the boot option wc.nofeatures.
+PATH=/usr/bin
+stage=$1
+case "$stage" in boot|session) ;; *) echo "usage: run-hooks boot|session" >&2; exit 2 ;; esac
+grep -q -w wc.nofeatures /proc/cmdline 2>/dev/null && exit 0
+
+for hook in /etc/wincraft/hooks/$stage.d/*.sh; do
+    [ -f "$hook" ] || continue
+    name=${hook##*/}
+    timeout 30 sh "$hook" </dev/null
+    status=$?
+    case $status in
+        0)       echo "hooks: $stage $name: ok" ;;
+        124|143) echo "hooks: $stage $name: stopped after 30 seconds" ;;
+        *)       echo "hooks: $stage $name: failed (exit status $status)" ;;
+    esac
+done
+exit 0

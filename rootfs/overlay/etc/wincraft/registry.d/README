@@ -1,0 +1,4 @@
+Windows registry settings that features add: *.reg files, imported with
+regedit when the desktop starts and they have changed. Removing a feature
+does not undo what its .reg file set. Files here are links that the
+feature helper makes; see README, "Features".

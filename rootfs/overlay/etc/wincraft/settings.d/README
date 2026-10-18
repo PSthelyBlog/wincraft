@@ -1,0 +1,4 @@
+WinCraft settings that features add: *.conf files of "key=value" lines,
+read in name order, the last value for a key winning. Read them with
+/usr/lib/wincraft/setting KEY [DEFAULT]. Files here are links that the
+feature helper makes; see README, "Features".

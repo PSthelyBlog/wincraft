@@ -19,6 +19,28 @@ cd "$HOME" || exit 1
 # session ends with the display.
 (while xrandr >/dev/null 2>&1; do wcwm; sleep 1; done) &
 
+# Features (README, "Features"): the registry settings they bring, imported
+# again whenever they change, then their session hooks. The boot option
+# wc.nofeatures leaves both out.
+if ! grep -q -w wc.nofeatures /proc/cmdline; then
+    set -- /etc/wincraft/registry.d/*.reg
+    if [ -f "$1" ]; then
+        sums=$HOME/.cache/wincraft/registry.d.sum
+        sum=$(cat "$@" | md5sum)
+        if [ "$sum" != "$(cat "$sums" 2>/dev/null)" ]; then
+            for reg in "$@"; do
+                if wine regedit /S "Z:$(printf '%s' "$reg" | tr / '\\')"; then
+                    echo "features: imported ${reg##*/}"
+                else
+                    echo "features: could not import ${reg##*/}"
+                fi
+            done
+            mkdir -p "${sums%/*}" && echo "$sum" > "$sums"
+        fi
+    fi
+    /usr/lib/wincraft/run-hooks session
+fi
+
 rm -f "$XDG_RUNTIME_DIR/wincraft-ending"
 while :; do
     # while the session is being ended for shutdown, leave the shell closed

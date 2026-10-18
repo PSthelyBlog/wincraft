@@ -9,6 +9,7 @@
  *   wcshell.exe /setup      create the default shortcuts, then exit (build time)
  *   wcshell.exe /download   "Download a Program": fetch an installer and run it
  *   wcshell.exe /install    "Install WinCraft OS": copy a live system to a disk
+ *   wcshell.exe /features   "WinCraft Features": the features added to this computer
  *
  * The shell owns no application logic: programs are whatever the Start Menu
  * and Desktop folders contain, exactly as on Windows, so installers "just
@@ -2218,6 +2219,270 @@ static int install_tool(HINSTANCE inst)
 }
 
 /* ======================================================================
+ * "WinCraft Features": the features added to this computer, which fill a gap
+ * of WinCraft's (README, "Features"). Each is a folder of root's under
+ * /var/lib/wincraft/features; this window lists them and has
+ * /usr/lib/wincraft/priv.d/feature enable, disable or remove one.
+ * ====================================================================== */
+
+enum { IDC_FEAT_LIST = 500, IDC_FEAT_INFO, IDC_FEAT_TOGGLE, IDC_FEAT_REMOVE, IDC_FEAT_STATUS };
+
+#define FEATURES_UNIX   L"/var/lib/wincraft/features"
+
+struct feature {
+    WCHAR id[48];
+    WCHAR name[96];
+    WCHAR info[1200];
+    BOOL enabled;
+};
+
+static struct feature g_feats[64];
+static int g_nfeats;
+static BOOL g_feat_busy;
+
+/* The value of "key=" in a feature.conf, as text for the window. */
+static void feat_value(const char *conf, const char *key, WCHAR *out, int size)
+{
+    size_t klen = strlen(key);
+    const char *p = conf;
+
+    out[0] = 0;
+    while (p && *p) {
+        if (!strncmp(p, key, klen) && p[klen] == '=') {
+            char value[1024];
+            size_t n = strcspn(p + klen + 1, "\r\n");
+
+            if (n >= sizeof(value))
+                n = sizeof(value) - 1;
+            memcpy(value, p + klen + 1, n);
+            value[n] = 0;
+            MultiByteToWideChar(CP_UTF8, 0, value, -1, out, size);
+            return;
+        }
+        p = strchr(p, '\n');
+        if (p)
+            p++;
+    }
+}
+
+static void load_features(void)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(UNIX_ROOT L"\\var\\lib\\wincraft\\features\\*", &fd);
+
+    g_nfeats = 0;
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        struct feature *f = &g_feats[g_nfeats];
+        WCHAR path[MAX_PATH], desc[600], created[64], by[96], version[32];
+        char conf[4096] = "";
+
+        if (fd.cFileName[0] == L'.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        lstrcpynW(f->id, fd.cFileName, ARRAYSIZE(f->id));
+        wsprintfW(path, FEATURES_UNIX L"/%s/feature.conf", f->id);
+        read_native_file(path, conf, sizeof(conf));
+        feat_value(conf, "name", f->name, ARRAYSIZE(f->name));
+        if (!f->name[0])
+            lstrcpynW(f->name, f->id, ARRAYSIZE(f->name));
+        feat_value(conf, "description", desc, ARRAYSIZE(desc));
+        feat_value(conf, "created", created, ARRAYSIZE(created));
+        feat_value(conf, "by", by, ARRAYSIZE(by));
+        feat_value(conf, "version", version, ARRAYSIZE(version));
+        wsprintfW(path, UNIX_ROOT FEATURES_UNIX L"/%s/enabled", f->id);
+        for (WCHAR *q = path; *q; q++)
+            if (*q == L'/')
+                *q = L'\\';
+        f->enabled = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+        /* the description, then where it comes from */
+        lstrcpynW(f->info, desc[0] ? desc : L"(no description)", 700);
+        lstrcatW(f->info, L"\r\n");
+        if (created[0])
+            wsprintfW(f->info + lstrlenW(f->info), L"\r\nAdded: %s", created);
+        if (by[0])
+            wsprintfW(f->info + lstrlenW(f->info), L"\r\nBy: %s", by);
+        if (version[0])
+            wsprintfW(f->info + lstrlenW(f->info), L"\r\nMade on WinCraft OS %s", version);
+        wsprintfW(f->info + lstrlenW(f->info), L"\r\nFolder: %s/%s", FEATURES_UNIX, f->id);
+        g_nfeats++;
+    } while (g_nfeats < (int)ARRAYSIZE(g_feats) && FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static void feat_select(HWND hwnd, int i)
+{
+    BOOL some = i >= 0 && i < g_nfeats;
+
+    SetDlgItemTextW(hwnd, IDC_FEAT_INFO, some ? g_feats[i].info :
+                    g_nfeats ? L"" : L"No features have been added to this computer.");
+    SetDlgItemTextW(hwnd, IDC_FEAT_TOGGLE, some && g_feats[i].enabled ? L"Disable" : L"Enable");
+    EnableWindow(GetDlgItem(hwnd, IDC_FEAT_TOGGLE), some && !g_feat_busy);
+    EnableWindow(GetDlgItem(hwnd, IDC_FEAT_REMOVE), some && !g_feat_busy);
+}
+
+static void feat_fill(HWND hwnd, int sel)
+{
+    int i;
+
+    load_features();
+    SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < g_nfeats; i++) {
+        WCHAR line[160];
+
+        wsprintfW(line, L"%s%s", g_feats[i].name, g_feats[i].enabled ? L"" : L"   (disabled)");
+        SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_ADDSTRING, 0, (LPARAM)line);
+    }
+    if (sel >= g_nfeats)
+        sel = g_nfeats - 1;
+    SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_SETCURSEL, sel, 0);
+    feat_select(hwnd, sel);
+}
+
+/* Ask the system to enable, disable or remove a feature; the timer follows. */
+static void feat_run(HWND hwnd, const WCHAR *action, const struct feature *f)
+{
+    WCHAR cmd[160];
+
+    wsprintfW(cmd, L"/usr/bin/wcctl priv feature %s %s", action, f->id);
+    if (!run_native(cmd, FALSE)) {
+        SetDlgItemTextW(hwnd, IDC_FEAT_STATUS, L"The system service did not respond.");
+        return;
+    }
+    g_feat_busy = TRUE;
+    feat_select(hwnd, (int)SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_GETCURSEL, 0, 0));
+    SetDlgItemTextW(hwnd, IDC_FEAT_STATUS, L"Working...");
+    SetTimer(hwnd, 1, 400, NULL);
+}
+
+static LRESULT CALLBACK features_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_COMMAND: {
+        int sel = (int)SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_GETCURSEL, 0, 0);
+        const struct feature *f = sel >= 0 && sel < g_nfeats ? &g_feats[sel] : NULL;
+
+        if (LOWORD(wp) == IDC_FEAT_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+            feat_select(hwnd, sel);
+        } else if (LOWORD(wp) == IDC_FEAT_TOGGLE && f && !g_feat_busy) {
+            feat_run(hwnd, f->enabled ? L"disable" : L"enable", f);
+        } else if (LOWORD(wp) == IDC_FEAT_REMOVE && f && !g_feat_busy) {
+            WCHAR text[400];
+
+            wsprintfW(text, L"Remove the feature \"%s\"?\n\nIts files are deleted from this computer; this "
+                      L"cannot be undone. Windows registry settings it made stay as they are.", f->name);
+            if (MessageBoxW(hwnd, text, L"Remove feature", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES)
+                feat_run(hwnd, L"remove", f);
+        } else if (LOWORD(wp) == IDCANCEL) {
+            SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        return 0;
+    }
+    case WM_TIMER: {
+        char buf[1024], *line;
+        WCHAR text[300];
+
+        if (!read_native_file(L"/run/wincraft/feature.status", buf, sizeof(buf)) || !buf[0])
+            return 0;
+        line = strrchr(buf, '\n');
+        line = line ? line + 1 : buf;
+        if (!strcmp(line, "done")) {
+            KillTimer(hwnd, 1);
+            g_feat_busy = FALSE;
+            feat_fill(hwnd, (int)SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_GETCURSEL, 0, 0));
+            SetDlgItemTextW(hwnd, IDC_FEAT_STATUS, L"Done. The change takes full effect when the computer "
+                            L"restarts.");
+        } else if (!strncmp(line, "error:", 6)) {
+            KillTimer(hwnd, 1);
+            g_feat_busy = FALSE;
+            wsprintfW(text, L"That did not work: %S", line + 7);
+            SetDlgItemTextW(hwnd, IDC_FEAT_STATUS, text);
+            feat_fill(hwnd, (int)SendDlgItemMessageW(hwnd, IDC_FEAT_LIST, LB_GETCURSEL, 0, 0));
+        }
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)lp == GetDlgItem(hwnd, IDC_FEAT_INFO)) {     /* read-only, but white */
+            SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        SetBkMode((HDC)wp, TRANSPARENT);
+        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    case WM_CLOSE:
+        if (g_feat_busy)
+            return 0;
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static int features_tool(HINSTANCE inst)
+{
+    static const WCHAR *intro =
+        L"Features add to WinCraft OS what it does not do yet, such as a setting it lacks. They are kept on "
+        L"this computer and survive updates. A feature that causes trouble can be disabled or removed here; "
+        L"the boot menu's \"without your features\" entry starts without any of them.";
+    WNDCLASSEXW wc;
+    RECT rc = { 0, 0, 560, 400 };
+    HFONT font;
+    HWND hwnd, ctl;
+    MSG msg;
+    int i;
+
+    if (CreateMutexW(NULL, TRUE, L"WinCraftFeatures") && GetLastError() == ERROR_ALREADY_EXISTS)
+        return 0;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = inst;
+    wc.lpfnWndProc = features_proc;
+    wc.lpszClassName = L"WinCraftFeatures";
+    wc.hCursor = LoadCursorW(NULL, (const WCHAR *)IDC_ARROW);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    RegisterClassExW(&wc);
+    AdjustWindowRect(&rc, WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+    hwnd = CreateWindowExW(0, wc.lpszClassName, L"WinCraft Features", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                           (GetSystemMetrics(SM_CXSCREEN) - (rc.right - rc.left)) / 2,
+                           (GetSystemMetrics(SM_CYSCREEN) - (rc.bottom - rc.top)) / 3,
+                           rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, inst, NULL);
+    if (!hwnd)
+        return 1;
+    font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    {
+        const struct { const WCHAR *cls, *text; DWORD style, exstyle; int x, y, w, h, id; } items[] = {
+            { L"STATIC", intro, 0, 0, 16, 14, 528, 56, 0 },
+            { L"LISTBOX", L"", WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY, 0, 16, 78, 200, 250, IDC_FEAT_LIST },
+            { L"EDIT", L"", ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE,
+              226, 78, 318, 250, IDC_FEAT_INFO },
+            { L"STATIC", L"", 0, 0, 16, 336, 528, 18, IDC_FEAT_STATUS },
+            { L"BUTTON", L"Enable", WS_TABSTOP, 0, 226, 362, 100, 28, IDC_FEAT_TOGGLE },
+            { L"BUTTON", L"Remove", WS_TABSTOP, 0, 334, 362, 100, 28, IDC_FEAT_REMOVE },
+            { L"BUTTON", L"Close", WS_TABSTOP, 0, 444, 362, 100, 28, IDCANCEL },
+        };
+
+        for (i = 0; i < (int)ARRAYSIZE(items); i++) {
+            ctl = CreateWindowExW(items[i].exstyle, items[i].cls, items[i].text, WS_CHILD | WS_VISIBLE | items[i].style,
+                                  items[i].x, items[i].y, items[i].w, items[i].h, hwnd,
+                                  (HMENU)(INT_PTR)items[i].id, inst, NULL);
+            SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        }
+    }
+    feat_fill(hwnd, 0);
+    ShowWindow(hwnd, SW_SHOW);
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (IsDialogMessageW(hwnd, &msg))
+            continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return 0;
+}
+
+/* ======================================================================
  * First-time setup: default shortcuts
  * ====================================================================== */
 
@@ -2313,6 +2578,8 @@ static int setup(void)
                          L"Get Windows programs from the web", NULL, 0)) ||
         FAILED(make_link(desktop, L"Download a Program", target, L"/download",
                          L"Get Windows programs from the web", NULL, 0)) ||
+        FAILED(make_link(programs, L"WinCraft Features", target, L"/features",
+                         L"Features added to WinCraft OS on this computer", NULL, 0)) ||
         FAILED(make_link(programs, L"Install WinCraft OS", target, L"/install",
                          L"Install WinCraft OS on this computer", shell32, -9)) ||
         FAILED(make_link(desktop, L"Install WinCraft OS", target, L"/install",
@@ -2357,6 +2624,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     if (StrStrIW(cmdline, L"/download")) {
         InitCommonControls();
         return download_tool(inst);
+    }
+    if (StrStrIW(cmdline, L"/features")) {
+        InitCommonControls();
+        return features_tool(inst);
     }
     if (StrStrIW(cmdline, L"/install")) {
         InitCommonControls();

@@ -73,4 +73,14 @@ done
 
 hwclock -s -u 2>/dev/null
 mount -a 2>/dev/null
+
+# Features (README, "Features"): the services they bring join the list above,
+# and their boot hooks run now, as root. The boot option wc.nofeatures, which
+# the boot menu offers as "without your features", leaves both out.
+if ! grep -q -w wc.nofeatures /proc/cmdline; then
+    for f in /etc/wincraft/services.d/*.service; do
+        [ -f "$f" ] && grep -v '^[[:space:]]*\(#\|$\)' "$f" >> /run/wincraft/services
+    done
+    /usr/lib/wincraft/run-hooks boot >> /run/log/hooks.log 2>&1
+fi
 exit 0

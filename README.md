@@ -194,6 +194,60 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   readable only by you, unless you untick *Remember the key*; in a live
   session all of it is lost at restart.
 
+## Features
+
+A *feature* adds to WinCraft OS, on one computer, something it does not do
+yet: a setting it lacks, a program started at every boot, a fix for one
+machine. Features are kept on the data partition, never replace a file of
+the system image, and survive updates.
+
+- **WinCraft Features** in the Start menu lists them, with what each does,
+  when it was added and by what, and buttons to disable, enable or remove
+  it. A change takes full effect at the next start.
+- The boot menu's **WinCraft OS (without your features)** entry starts with
+  every feature left out, to repair one that keeps the computer from
+  working.
+- Features are made by root. WinCraft Assistant cannot make them yet.
+
+### How a feature works
+
+The system image reads a few folders that it ships empty:
+
+| Folder | Holds | Read by | When |
+|---|---|---|---|
+| `/etc/wincraft/settings.d/*.conf` | `key=value` settings | `/usr/lib/wincraft/setting KEY [DEFAULT]` | when asked |
+| `/etc/wincraft/hooks/boot.d/*.sh` | scripts run as root | `rc.boot`, before the services | every boot |
+| `/etc/wincraft/hooks/session.d/*.sh` | scripts run as the user, with the desktop's environment | the desktop script, before the shell | every login |
+| `/etc/wincraft/services.d/*.service` | lines like those of `/etc/wincraft/services` | wcinit | every boot |
+| `/etc/wincraft/registry.d/*.reg` | Windows registry settings | `regedit`, at login | when they change |
+
+- Files are read in name order. For settings, the last value given for a
+  key wins.
+- Each hook has 30 seconds. A hook that fails or hangs is logged and
+  skipped, never stopping the computer from starting. Boot hooks log to
+  `/run/log/hooks.log`, session hooks to the desktop log.
+- The boot option `wc.nofeatures` leaves all five folders out.
+- Removing a feature does not undo what its `.reg` file set.
+
+A feature is a folder of root's, `/var/lib/wincraft/features/<id>/`:
+
+```
+feature.conf     name=, description=, created=, by=, version= (of WinCraft)
+files/settings.d/*.conf            files/hooks/boot.d/*.sh
+files/hooks/session.d/*.sh         files/services.d/*.service
+files/registry.d/*.reg
+enabled          present while it is enabled
+```
+
+Enabling one (`wcctl priv feature enable <id>`, which the Features window
+uses) links each of its files into the matching folder, under a name that
+carries the feature's id: `files/hooks/boot.d/50-apply.sh` of `keyboard`
+becomes `/etc/wincraft/hooks/boot.d/50-keyboard-apply.sh`. Disabling removes
+the links, removing deletes the folder too, and every change is recorded in
+`/var/lib/wincraft/features.log`. Since any program may ask for this, and an
+enabled feature runs as root, the helper accepts only a feature that root
+owns, with nothing in it that anyone else can write and no symbolic links.
+
 ## Run it from a build
 
 After [building](#build-it), the same ISO is in `out/`:
@@ -240,6 +294,7 @@ Edit the entry in the boot menu (`e`) to add these to the command line:
 |---|---|
 | `wc.toram` | copy the system image to RAM; the medium can be removed |
 | `wc.nodata` | ignore the data partition for this boot (a clean session) |
+| `wc.nofeatures` | leave out the [features](#features) added to this computer |
 | `wc.kbd=<layout>` | keyboard layout, e.g. `fr`, `de`, `gb` |
 | `wc.shell` | root shells on the second console (Ctrl+Alt+F2) and serial port |
 | `nomodeset` | use the firmware framebuffer |
