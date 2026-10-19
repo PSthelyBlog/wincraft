@@ -27,7 +27,10 @@ version, then an overview of this computer.
      `by=WinCraft Agent`, `version=` (from `/etc/wincraft/version`) and
      `task=` (the person's request, in one line).
    - its files under `files/`: `settings.d/*.conf`, `hooks/boot.d/*.sh`,
-     `hooks/session.d/*.sh`, `services.d/*.service`, `registry.d/*.reg`.
+     `hooks/session.d/*.sh`, `services.d/*.service`, `registry.d/*.reg`,
+     `environment.d/*.conf` (variables for the whole desktop session, such
+     as `LANG=fr_FR.UTF-8` for Windows programs in French; README,
+     "Features", lists the locales the image has).
      Name hooks with an order prefix, such as `50-apply.sh`.
 4. **Test it in the sandbox.** Enable it there the way WinCraft will once the
    person accepts it: `/usr/lib/wincraft/priv.d/feature enable <id>` links its

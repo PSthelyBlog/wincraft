@@ -9,6 +9,7 @@
 #   files/hooks/session.d/*.sh       linked into /etc/wincraft/hooks/session.d/
 #   files/services.d/*.service       linked into /etc/wincraft/services.d/
 #   files/registry.d/*.reg           linked into /etc/wincraft/registry.d/
+#   files/environment.d/*.conf       linked into /etc/wincraft/environment.d/
 #   enabled                          present while the feature is enabled
 # Each link's name carries the feature's id after the order prefix, so that
 # features never collide: files/hooks/boot.d/50-apply.sh of "keyboard" becomes
@@ -27,7 +28,7 @@ base=/var/lib/wincraft/features
 journal=/var/lib/wincraft/features.log
 status=/run/wincraft/feature.status
 ext=/etc/wincraft
-areas="settings.d:.conf hooks/boot.d:.sh hooks/session.d:.sh services.d:.service registry.d:.reg"
+areas="settings.d:.conf hooks/boot.d:.sh hooks/session.d:.sh services.d:.service registry.d:.reg environment.d:.conf"
 
 say()  { echo "$*" >> "$status"; }
 fail() { say "error: $*"; exit 1; }

@@ -1,0 +1,20 @@
+# Locales built into the image besides C.UTF-8, for the language a feature can
+# give the desktop session (environment.d, README "Features"). One per line;
+# each is built as <name>.UTF-8 by tools/build.sh (step_rootfs).
+de_AT
+de_CH
+de_DE
+en_GB
+es_ES
+es_MX
+fr_BE
+fr_CA
+fr_CH
+fr_FR
+it_IT
+nl_BE
+nl_NL
+pl_PL
+pt_BR
+pt_PT
+sv_SE

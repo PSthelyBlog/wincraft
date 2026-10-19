@@ -1,0 +1,6 @@
+Variables for the desktop session that features add: *.conf files of
+"KEY=value" lines, read in name order before the session starts, a later
+value winning (LANG=fr_FR.UTF-8 shows Windows programs in French). PATH,
+HOME, USER, LOGNAME, DISPLAY, XDG_RUNTIME_DIR, WINEPREFIX and LD_* are
+refused. Files here are links that the feature helper makes; see README,
+"Features".

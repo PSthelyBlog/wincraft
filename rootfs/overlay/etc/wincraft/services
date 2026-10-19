@@ -3,5 +3,5 @@
 # Output goes to /run/log/<name>.log
 syslog   respawn  exec syslogd -n -C1024
 net      once     exec /usr/lib/wincraft/net-up
-time     respawn  exec ntpd -n -p pool.ntp.org
+time     respawn  exec ntpd -n -p 0.pool.ntp.org -p 1.pool.ntp.org -p 2.pool.ntp.org -p 3.pool.ntp.org
 desktop  respawn  exec /usr/lib/wincraft/session

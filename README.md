@@ -91,8 +91,8 @@ Verified in QEMU, booting the ISO, unless noted:
   place; search still finds what is inside.
 - Networking: wired, DHCP, DNS; HTTPS with certificate validation.
 - **The clock follows internet time**: the `time` service runs `ntpd`
-  against `pool.ntp.org` once the network is up, and corrects a clock that
-  is wrong.
+  against four `pool.ntp.org` servers once the network is up, and corrects
+  a clock that is wrong.
 - **Install to disk**, boot from the installed disk (BIOS and UEFI), files
   persisting across reboots. After the installation the computer starts the
   disk even with the installation ISO still attached.
@@ -160,9 +160,11 @@ Be clear-eyed about these before you depend on it:
   Paint.NET 5.1's installer crashes while checking the graphics hardware.
 - Notification-area icons appear in a small floating window above the clock
   rather than inside the taskbar.
-- The time zone is UTC and the keyboard layout is US unless set at boot
-  (`wc.kbd=fr`); there is no settings panel for either yet. The WinCraft
-  Agent can add a feature that keeps a layout or a time zone.
+- The time zone is UTC, the keyboard layout is US unless set at boot
+  (`wc.kbd=fr`), and Windows programs are in English; there is no settings
+  panel for any of them yet. The WinCraft Agent can add a feature that keeps
+  a layout, a time zone or a language. WinCraft's own windows are in
+  English only.
 - Untested: real hardware (its sound included), booting from a USB stick.
   Secure Boot is not supported (the boot loader is unsigned).
 - It has had no security review. Treat it as a single-user machine.
@@ -242,14 +244,26 @@ The system image reads a few folders that it ships empty:
 | `/etc/wincraft/hooks/session.d/*.sh` | scripts run as the user, with the desktop's environment | the desktop script, before the shell | every login |
 | `/etc/wincraft/services.d/*.service` | lines like those of `/etc/wincraft/services` | wcinit | every boot |
 | `/etc/wincraft/registry.d/*.reg` | Windows registry settings | `regedit`, at login | when they change |
+| `/etc/wincraft/environment.d/*.conf` | `KEY=value` variables for the whole desktop session | the desktop script, before Wine starts | every login |
 
 - Files are read in name order. For settings, the last value given for a
   key wins.
 - Each hook has 30 seconds. A hook that fails or hangs is logged and
   skipped, never stopping the computer from starting. Boot hooks log to
   `/run/log/hooks.log`, session hooks to the desktop log.
-- The boot option `wc.nofeatures` leaves all five folders out.
+- The boot option `wc.nofeatures` leaves all six folders out.
 - Removing a feature does not undo what its `.reg` file set.
+- In `environment.d`, a later file wins. `PATH`, `HOME`, `USER`, `LOGNAME`,
+  `DISPLAY`, `XDG_RUNTIME_DIR`, `WINEPREFIX` and `LD_*` are refused;
+  `WINEDLLOVERRIDES` is added to WinCraft's own. Every Windows program of
+  the session inherits these variables, so a wrong value can affect them
+  all: the boot menu's *without your features* entry leaves them out.
+- **Languages.** `LANG=fr_FR.UTF-8` in `environment.d` shows Windows
+  programs in French, with French dates and numbers; Wine carries the
+  translations. The image has these locales besides `C.UTF-8`: de_AT,
+  de_CH, de_DE, en_GB, es_ES, es_MX, fr_BE, fr_CA, fr_CH, fr_FR, it_IT,
+  nl_BE, nl_NL, pl_PL, pt_BR, pt_PT and sv_SE (`rootfs/locales.txt`); Wine
+  ignores a language whose locale is missing.
 
 A feature is a folder of root's, `/var/lib/wincraft/features/<id>/`:
 
@@ -257,7 +271,7 @@ A feature is a folder of root's, `/var/lib/wincraft/features/<id>/`:
 feature.conf     name=, description=, created=, by=, version= (of WinCraft)
 files/settings.d/*.conf            files/hooks/boot.d/*.sh
 files/hooks/session.d/*.sh         files/services.d/*.service
-files/registry.d/*.reg
+files/registry.d/*.reg             files/environment.d/*.conf
 enabled          present while it is enabled
 ```
 

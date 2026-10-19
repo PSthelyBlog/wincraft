@@ -15,6 +15,30 @@ export WINCRAFT_TASKBAR=${WINCRAFT_TASKBAR:-44}
 export WINEDLLOVERRIDES="winemenubuilder.exe=d"
 cd "$HOME" || exit 1
 
+# Features (README, "Features"): variables for the whole session from
+# environment.d, "KEY=value" lines, later files winning; LANG=fr_FR.UTF-8, for
+# instance, shows Windows programs in French. The variables the session
+# itself depends on are refused, and wc.nofeatures leaves them all out.
+if ! grep -q -w wc.nofeatures /proc/cmdline; then
+    for env in /etc/wincraft/environment.d/*.conf; do
+        [ -f "$env" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            key=${line%%=*} value=${line#*=}
+            case "$key" in
+                "$line"|''|[0-9]*|*[!A-Za-z0-9_]*)
+                    echo "features: ${env##*/}: not a KEY=value line: $line"; continue ;;
+                PATH|HOME|USER|LOGNAME|DISPLAY|XDG_RUNTIME_DIR|WINEPREFIX|LD_*)
+                    echo "features: ${env##*/}: $key cannot be set"; continue ;;
+                WINEDLLOVERRIDES)
+                    value="winemenubuilder.exe=d;$value" ;;
+            esac
+            export "$key=$value"
+            echo "features: ${env##*/}: $key set"
+        done < "$env"
+    done
+fi
+
 # The window manager and the shell are restarted if they ever exit; the
 # session ends with the display.
 (while xrandr >/dev/null 2>&1; do wcwm; sleep 1; done) &

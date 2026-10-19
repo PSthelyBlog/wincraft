@@ -922,6 +922,16 @@ char *system_snapshot(void)
     sb_addw(&b, tzid == TIME_ZONE_ID_DAYLIGHT && tz.DaylightName[0] ? tz.DaylightName :
                 tz.StandardName[0] ? tz.StandardName : L"UTC");
     sb_add(&b, ".\n");
+    /* the session's language: LANG, which a feature may set (environment.d) */
+    {
+        char lang[64] = "";
+        WCHAR locale[LOCALE_NAME_MAX_LENGTH] = L"";
+
+        GetEnvironmentVariableA("LANG", lang, sizeof(lang));
+        GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH);
+        sb_addf(&b, "Language of Windows programs: %S (LANG=%s).\n", locale[0] ? locale : L"?",
+                lang[0] ? lang : "unset");
+    }
 
     sb_add(&b, "Network: ");
     network_summary(&b, FALSE);

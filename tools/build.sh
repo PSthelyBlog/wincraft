@@ -240,6 +240,28 @@ umount_root() {
     umount -R $R/proc $R/dev $R/tmp $R/run 2>/dev/null || true
 }
 
+# The locales of rootfs/locales.txt, for the language a feature can give the
+# session (README, "Features"). pacman leaves the locale sources out of the
+# stage, so they come from the stage's own glibc package, and the stage's
+# localedef builds them: the data always matches the image's glibc.
+build_locales() {
+    local v pkg src l
+    v=$(sed -n '/^%VERSION%/{n;p}' $S/var/lib/pacman/local/glibc-[0-9]*/desc)
+    pkg=/var/cache/pacman/pkg/glibc-$v-x86_64.pkg.tar.zst
+    [ -f "$pkg" ] || { echo "rootfs: $pkg is missing (stage again)" >&2; exit 1; }
+    say "Building locales"
+    src=$B/i18n
+    rm -rf $src
+    mkdir -p $src
+    bsdtar -xf "$pkg" -C $src usr/share/i18n
+    for l in $(grep -v '^#' $W/rootfs/locales.txt); do
+        I18NPATH=$src/usr/share/i18n $S/usr/lib/ld-linux-x86-64.so.2 --library-path $S/usr/lib \
+            $S/usr/bin/localedef --no-archive -c -i $l -f UTF-8 $R/usr/lib/locale/$l.utf8 ||
+            { echo "rootfs: could not build the locale $l" >&2; exit 1; }
+    done
+    rm -rf $src
+}
+
 step_rootfs() {
     stage_ready || step_stage
     say "Assembling root filesystem"
@@ -259,6 +281,7 @@ step_rootfs() {
     chmod 600 $R/etc/shadow
     chmod 750 $R/root
     echo "$VERSION" > $R/etc/wincraft/version
+    build_locales
 
     say "Building native components"
     step_native
