@@ -90,12 +90,22 @@ sandboxed() {
         $mount -t tmpfs -o mode=755 run "$r/run"
         mkdir -p "$r/run/wincraft"
         cp /run/resolv.conf "$r/run/resolv.conf" 2>/dev/null
-        exec chroot "$r" /usr/bin/setpriv --no-new-privs --inh-caps=-all --bounding-set="$caps" \
+        # This shell stays the namespace'"'"'s first process and waits: the first
+        # process ignores SIGTERM, so a command running as it could never be
+        # stopped by timeout (BusyBox'"'"'s keeps the command in its own process).
+        # When this shell ends, everything the command left behind ends too.
+        chroot "$r" /usr/bin/setpriv --no-new-privs --inh-caps=-all --bounding-set="$caps" \
             /usr/bin/timeout 300 /bin/sh -c "cd /root 2>/dev/null || cd /; $cmd" < "$stdin"
     ' sandbox "$root" "$1" "$2" "$caps" "$mount"
 }
 
 [ "$action" = start ] || [ -d "$root" ] || { echo "agent: no sandbox for $task" >&2; exit 1; }
+# "stop" ends whatever still runs in the sandbox first, rather than waiting for it
+if [ "$action" = stop ]; then
+    for p in /proc/[0-9]*; do
+        [ "$(readlink "$p/root" 2>/dev/null)" = "$root" ] && kill -KILL "${p#/proc/}" 2>/dev/null
+    done
+fi
 mkdir -p "$base"
 exec 9> "$base/.$task.lock"
 flock 9                                 # one action at a time per sandbox

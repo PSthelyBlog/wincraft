@@ -77,6 +77,15 @@ version, then an overview of this computer.
   tools such as `setxkbmap`), the network, and no compiler or package
   manager. It has no disks, and an empty `/home`: the person's files are not
   yours to read.
+- The shell is BusyBox's, and it runs its own built-in commands before
+  searching `PATH`: plain `setpriv`, `unshare`, `mount`, `date`, `sleep`,
+  `timeout` and others are BusyBox's versions, with fewer options. Call
+  util-linux tools by their full path in scripts (`/usr/bin/setpriv
+  --reuid=1000 ...`, `/usr/bin/unshare`). For the same reason a test
+  stand-in placed in `PATH` is ignored: test the real command, at least
+  once, before you rely on it.
+- Each `sandbox_run` command is stopped after 300 seconds, with everything
+  it started. Make test loops end by themselves, well before that.
 - The kernel's settings are read-only in the sandbox (`/proc/sys`, the
   computer name, and the like), and it has a computer name of its own. A
   hook that changes such a setting cannot take effect there: check its
