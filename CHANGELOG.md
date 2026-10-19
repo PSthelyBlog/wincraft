@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.5 — 2026-10-19
+
+Windows programs in your language, and a sturdier clock.
+
+- **A sixth folder for features: `environment.d`.** Its `KEY=value` lines
+  are variables for the whole desktop session, set before Wine starts, so
+  every Windows program inherits them: a language, a sound card
+  (`ALSA_CARD`), a frame counter for games (`GALLIUM_HUD=fps`), a mapping
+  for an unknown gamepad (`SDL_GAMECONTROLLERCONFIG`). The variables the
+  session depends on (`PATH`, `HOME`, `DISPLAY`, `WINEPREFIX`, `LD_*` and a
+  few others) are refused, and the boot menu's *without your features*
+  entry leaves them all out.
+- **Windows programs can be in your language.** `LANG=fr_FR.UTF-8` shows
+  them in French, with French dates and numbers: Notepad becomes
+  *Bloc-notes*. Wine has the translations but ignores a language whose
+  locale data is missing, and the image had only `C.UTF-8`; it now has
+  17 European locales (de_AT, de_CH, de_DE, en_GB, es_ES, es_MX, fr_BE,
+  fr_CA, fr_CH, fr_FR, it_IT, nl_BE, nl_NL, pl_PL, pt_BR, pt_PT, sv_SE),
+  built from the image's own glibc. WinCraft's own windows stay in English.
+- **The clock recovers sooner.** The time service asks four `pool.ntp.org`
+  servers instead of one address found at start: after a host's sleep, the
+  single server it had stopped answering for eight minutes, and the clock
+  stayed eight seconds off until it came back.
+- WinCraft Assistant's overview gives the language of Windows programs.
+- Everything else is as in 0.7.4.
+
 ## 0.7.4 — 2026-10-18
 
 A security fix for the WinCraft Agent's sandbox.
