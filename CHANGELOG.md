@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.7 — 2026-10-19
+
+A fix for WinCraft Assistant and the WinCraft Agent.
+
+- **An answer cut off at the length limit no longer ends a task without a
+  word.** The WinCraft Agent stopped silently while writing a nightly
+  shutdown service: its answer reached the 4,096-token limit in the
+  middle of writing a file, and the cut-off answer passed for a finished
+  one. Answers may now be 16,384 tokens long. When one is cut off anyway,
+  the chat says so, nothing in it is run (a cut-off file could be
+  incomplete), and the model is asked for the rest in smaller steps.
+- The agent's rules ask for long scripts to be written in parts.
+- Everything else is as in 0.7.6.
+
 ## 0.7.6 — 2026-10-19
 
 A fix for WinCraft Assistant and the WinCraft Agent.
