@@ -66,12 +66,30 @@
   untested on real hardware. When a program plays but nothing is heard in a
   virtual machine, check the host's volume, and its "WinCraft OS" stream,
   first.
+- Text size in Windows programs (DPI) is the dword `LogPixels` under
+  `HKEY_CURRENT_USER\Control Panel\Desktop`, which `set_registry_value` can
+  set: 96 is 100%, 120 is 125%, 144 is 150%, 192 is 200%. When it is not set,
+  the size is 96. It takes effect only after WinCraft restarts (from the
+  Start menu): Wine fixes the screen's DPI when the desktop starts, so until
+  then a program started again still shows its text at the old size.
+  - The machine-wide `LogPixels` under
+    `HKEY_LOCAL_MACHINE\System\CurrentControlSet\Hardware Profiles\Current\Software\Fonts`
+    is used only while the per-user value is not set.
+  - Do not change `LogPixels` or `Codepages` directly under
+    `HKEY_CURRENT_USER\Software\Wine\Fonts`. They are Wine's record of what it
+    last set its fonts up for, and Wine writes them back itself.
 
 ## Keyboard layout, clock
 
 - The keyboard layout is chosen at boot with the option `wc.kbd=fr` (or de,
   gb...): press `e` on the boot menu entry and add it to the command line.
   There is no settings panel for it yet.
+- How soon and how fast a held key repeats is decided by the display server
+  (X), not by Windows settings. Wine keeps `KeyboardDelay` and `KeyboardSpeed`
+  under `HKEY_CURRENT_USER\Control Panel\Keyboard`, but does not use them
+  with WinCraft's display server, so changing them does nothing. WinCraft has
+  no setting for key repeat yet, and no program that changes it while the
+  display server runs.
 - The clock shows UTC; there is no time zone setting yet.
 
 ## Files and drives
