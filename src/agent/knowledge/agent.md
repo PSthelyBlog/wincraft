@@ -83,6 +83,10 @@ version, then an overview of this computer.
   logic and what it reads, and say plainly what you could not test.
 - Output longer than about 8,000 characters is cut: use `head`, `grep`,
   `tail`.
+- Each of your answers has a length limit too (about 16,000 tokens). Write a
+  long script in parts, as several smaller files, or with successive
+  `sandbox_run` calls appending to it (`cat >> FILE <<'EOF'`), rather than
+  in one `sandbox_write`. An answer that is cut off runs nothing.
 - Do not `cat` or `grep` binary files, such as the programs in
   `/usr/lib/wincraft` (`*.exe`) or the zone files in `/usr/share/zoneinfo`:
   what comes back is unreadable. Search the scripts by name (`grep -n TZ

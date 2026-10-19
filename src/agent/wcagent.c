@@ -1300,6 +1300,20 @@ static DWORD WINAPI chat_thread(void *arg)
         g_tok_out += r.out_tokens;
         if (r.text)
             post_chat(CHAT_ANSWER, "%s", r.text);
+        if (r.truncated) {
+            /* An answer cut off at the length limit may end in a tool call whose
+             * input is incomplete: run nothing from it, and ask for the rest. */
+            post_chat(CHAT_QUIET, "  \xc2\xb7 The answer was cut off at the length limit; asked for the rest in "
+                                  "smaller steps\n");
+            activity_log("answer cut off at the length limit (%ld tokens), %d tool call(s) not run", r.out_tokens,
+                         r.ncalls);
+            if (!r.ncalls && step < max_steps - 1) {
+                llm_add_user(&g_cfg, g_messages, "(Your answer was cut off at the length limit. Continue where it "
+                                                 "stopped, in smaller steps.)");
+                llm_reply_free(&r);
+                continue;
+            }
+        }
         if (!r.ncalls) {
             llm_reply_free(&r);
             break;
@@ -1308,7 +1322,10 @@ static DWORD WINAPI chat_thread(void *arg)
             const tool_def *t = tool_find(r.calls[i].name);
             char *args = json_dump(r.calls[i].input);
 
-            if (!t) {
+            if (r.truncated) {
+                results[i] = utf8_dup("Not run: your answer was cut off at the length limit, so this call may be "
+                                      "incomplete. Send it again in smaller pieces: write a long file in parts.");
+            } else if (!t) {
                 results[i] = utf8_dup("There is no tool of that name.");
             } else if (llm_cancelled()) {
                 results[i] = utf8_dup("Stopped by the person before this ran.");

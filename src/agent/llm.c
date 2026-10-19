@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_TOKENS      4096
+#define MAX_TOKENS      16384       /* per answer: the WinCraft Agent writes whole scripts */
 #define MAX_RESPONSE    (8 << 20)
 
 static CRITICAL_SECTION g_lock;
@@ -413,6 +413,7 @@ static int chat_anthropic(const config *cfg, const char *system, const json *too
         }
     }
     r->text = text.len ? sb_take(&text) : (sb_free(&text), NULL);
+    r->truncated = json_str(resp, "stop_reason") && !strcmp(json_str(resp, "stop_reason"), "max_tokens");
     r->in_tokens = (long)json_num(json_get(resp, "usage"), "input_tokens", 0) +
                    (long)json_num(json_get(resp, "usage"), "cache_read_input_tokens", 0) +
                    (long)json_num(json_get(resp, "usage"), "cache_creation_input_tokens", 0);
@@ -479,6 +480,11 @@ static int chat_openai(const config *cfg, const char *system, const json *tools,
         json *input = args ? json_parse(args, strlen(args)) : NULL;
 
         add_call(r, json_str(c, "id"), json_str(fn, "name"), input);
+    }
+    {
+        const char *finish = json_str(json_at(json_get(resp, "choices"), 0), "finish_reason");
+
+        r->truncated = finish && !strcmp(finish, "length");
     }
     r->in_tokens = (long)json_num(json_get(resp, "usage"), "prompt_tokens", 0);
     r->out_tokens = (long)json_num(json_get(resp, "usage"), "completion_tokens", 0);

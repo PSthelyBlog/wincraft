@@ -102,6 +102,7 @@ typedef struct {
     int ncalls;
     long in_tokens, out_tokens;
     int http_status;
+    BOOL truncated;             /* cut off at the length limit: calls may be incomplete */
     char *error;                /* set on failure, human readable */
     json *turn;                 /* the model's turn, to add to the conversation */
 } llm_reply;
