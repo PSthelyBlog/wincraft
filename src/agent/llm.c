@@ -106,7 +106,7 @@ static void http_request(const WCHAR *base, const WCHAR *path, const WCHAR *meth
     URL_COMPONENTS uc;
     WCHAR host[256], basepath[1024], url[2048];
     HINTERNET ses = NULL, con = NULL, req = NULL;
-    DWORD status = 0, size = sizeof(status), avail, got, err;
+    DWORD status = 0, size = sizeof(status), avail, got, err, wait = 300000, t0 = GetTickCount(), t_sent = 0;
     sb_t out;
     size_t blen = body ? strlen(body) : 0;
 
@@ -139,8 +139,13 @@ static void http_request(const WCHAR *base, const WCHAR *path, const WCHAR *meth
                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!ses)
         goto fail;
-    /* resolve, connect, send, receive (ms): a model may think for minutes */
+    /* resolve, connect, send, receive (ms): a model may think for minutes.
+     * The wait for the first bytes of the answer is a separate option, and
+     * Wine gives it 21 s unless told otherwise: a model writing a long reply
+     * (the WinCraft Agent writing a script) took longer, and the request
+     * failed with the socket's time-out, error 10060. */
     WinHttpSetTimeouts(ses, 15000, 15000, 60000, 300000);
+    WinHttpSetOption(ses, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT, &wait, sizeof(wait));
     con = WinHttpConnect(ses, host, uc.nPort, 0);
     if (!con)
         goto fail;
@@ -159,8 +164,10 @@ static void http_request(const WCHAR *base, const WCHAR *path, const WCHAR *meth
     g_active = req;
     LeaveCriticalSection(&g_lock);
 
-    if (!WinHttpSendRequest(req, headers, (DWORD)-1L, (void *)body, (DWORD)blen, (DWORD)blen, 0) ||
-        !WinHttpReceiveResponse(req, NULL))
+    if (!WinHttpSendRequest(req, headers, (DWORD)-1L, (void *)body, (DWORD)blen, (DWORD)blen, 0))
+        goto fail;
+    t_sent = GetTickCount();
+    if (!WinHttpReceiveResponse(req, NULL))
         goto fail;
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
@@ -191,6 +198,11 @@ static void http_request(const WCHAR *base, const WCHAR *path, const WCHAR *meth
 
 fail:
     err = GetLastError();
+    /* for the activity log: where it failed, and when (no headers, no key) */
+    activity_log("request of %lu KB failed %s, after %lu ms (error %lu)", (unsigned long)(blen / 1024),
+                 !t_sent ? "while connecting or sending" : !status && !out.len ? "while waiting for the answer"
+                                                                              : "while reading the answer",
+                 GetTickCount() - t0, (unsigned long)err);
     if (g_cancel)
         set_error(&res->error, "Stopped.");
     else if (winhttp_reason(err))
