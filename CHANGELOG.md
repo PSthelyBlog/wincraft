@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.6 — 2026-10-19
+
+A fix for WinCraft Assistant and the WinCraft Agent.
+
+- **A model that takes more than 21 seconds to start answering no longer
+  fails** with "Could not reach the provider (error 10060)". Wine's WinHTTP
+  waits only 21 seconds for the first bytes of an answer unless told
+  otherwise, and the 300 seconds the assistant asked for did not cover that
+  wait. The WinCraft Agent hit it twice in a row while writing a service
+  that shuts the computer down every night; it now waits up to 300 seconds.
+- **A failed request is recorded in the activity log** (*Chat > Activity
+  log*) with its size, the step that failed (connecting, waiting for the
+  answer, reading it) and how long it took.
+- Everything else is as in 0.7.5.
+
 ## 0.7.5 — 2026-10-19
 
 Windows programs in your language, and a sturdier clock.
