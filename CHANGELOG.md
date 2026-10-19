@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.9 — 2026-10-19
+
+A fix for WinCraft Assistant.
+
+- **"Make the text bigger" changes the right setting.** The assistant raised
+  a value Wine keeps for itself (`LogPixels` under
+  `HKEY_CURRENT_USER\Software\Wine\Fonts`), which Wine sets back on its own,
+  and said the text was bigger. Asked again, it took a machine-wide value it
+  cannot change for the real setting and gave up. Its guide now names
+  `LogPixels` under `HKEY_CURRENT_USER\Control Panel\Desktop`, and says the
+  new size shows only after WinCraft restarts: Wine fixes the screen's size
+  settings when the desktop starts, so a program started again before that
+  looks the same.
+- Its guide also says that how fast a held key repeats is the display
+  server's, not Windows': the Windows values for it do nothing in WinCraft.
+- Everything else is as in 0.7.8.
+
 ## 0.7.8 — 2026-10-19
 
 A fix for the WinCraft Agent's sandbox.

@@ -4,8 +4,8 @@
 1 RT_MANIFEST "wcagent.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,7,8,0
-PRODUCTVERSION 0,7,8,0
+FILEVERSION 0,7,9,0
+PRODUCTVERSION 0,7,9,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -15,9 +15,9 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "WinCraft OS"
             VALUE "FileDescription", "WinCraft Assistant"
-            VALUE "FileVersion", "0.7.8"
+            VALUE "FileVersion", "0.7.9"
             VALUE "ProductName", "WinCraft OS"
-            VALUE "ProductVersion", "0.7.8"
+            VALUE "ProductVersion", "0.7.9"
             VALUE "LegalCopyright", "MIT License"
         END
     END
