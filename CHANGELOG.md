@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.8 — 2026-10-19
+
+A fix for the WinCraft Agent's sandbox.
+
+- **A command in the sandbox is really stopped after 300 seconds**, with
+  everything it started. A test the agent ran looped for 27 minutes, and
+  every later command of the task waited behind it: the command was the
+  first process of the sandbox's process list, which ignores the signal
+  meant to stop it.
+- **Closing the agent's window ends its sandbox at once**, even while a
+  command is running; before, it waited for that command to finish.
+- The agent's rules warn that BusyBox's shell runs its own `setpriv`,
+  `unshare`, `date`, `sleep` and others before those of `PATH`: the
+  agent's first nightly-shutdown feature called a `setpriv` without the
+  option it needed, and its tests, which replaced it, did not show it.
+- Everything else is as in 0.7.7.
+
 ## 0.7.7 — 2026-10-19
 
 A fix for WinCraft Assistant and the WinCraft Agent.
