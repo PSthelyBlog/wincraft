@@ -92,6 +92,56 @@
   display server runs.
 - The clock shows UTC; there is no time zone setting yet.
 
+## Windows settings that do nothing here
+
+Wine keeps many Windows settings in the registry without applying them, and
+WinCraft draws parts of the screen itself. Such a value can be read and
+written like any other, so finding it proves nothing. When a request comes
+down to one of these, say that WinCraft cannot change it yet, instead of
+writing the value.
+
+- Kept by Wine but not applied by Wine's own windows and controls (a program
+  that reads the value itself may still follow it):
+  - under `HKEY_CURRENT_USER\Control Panel\Mouse`: `MouseSensitivity`,
+    `MouseSpeed`, `MouseThreshold1` and `MouseThreshold2` (pointer speed and
+    acceleration belong to the display server), `MouseTrails`,
+    `SnapToDefaultButton`, `ActiveWindowTracking`, and `SwapMouseButtons`
+    (Wine reports the buttons as swapped but does not swap the clicks);
+  - under `Control Panel\Desktop`: `MenuShowDelay`, `CaretWidth` (Wine's text
+    boxes always draw a 1-pixel cursor), `FocusBorderWidth`,
+    `FocusBorderHeight`, `ForegroundLockTimeout`, `ForegroundFlashCount`,
+    `WheelScrollChars`, `ClickLockTime`, `ScreenSaveTimeOut`,
+    `ScreenSaveActive`, `LowPowerActive`, `PowerOffActive`, `DragFullWindows`
+    (ordinary windows always move with their contents), and the effects in
+    `UserPreferencesMask` other than gradient title bars and flat menus: menu,
+    tooltip and selection fades, drop shadows, the pointer shadow, underlined
+    shortcut letters, hot tracking, smooth list scrolling, ClickLock;
+  - `IconSpacing` and `IconVerticalSpacing` under
+    `Control Panel\Desktop\WindowMetrics`;
+  - the keyboard preference, screen reader, ShowSounds and audio description
+    flags under `Control Panel\Accessibility`.
+- Not read at all: the pointer scheme and size (`Control Panel\Cursors`,
+  `CursorBaseSize` included), and the Windows 10 and 11 accent colour under
+  `Software\Microsoft\Windows\DWM`. Title bars take their colours from
+  `ActiveTitle` and `GradientActiveTitle` in `Control Panel\Colors`.
+- Values Wine writes for itself, which look like settings:
+  - under `Software\Wine\Fonts`: `LogPixels`, `Codepages`, and the
+    `External Fonts` and `Cache` keys;
+  - under `Software\Microsoft\Windows\CurrentVersion\ThemeManager`: the
+    `Control Panel\Colors` key, `NonClientMetrics` and `IconTitleFont`, a copy
+    taken when the theme was switched on. If the theme is switched off, Wine
+    puts that copy back over `Control Panel\Colors`, undoing colour changes
+    made since.
+  - `Control Panel\International` is a real setting (date, time and number
+    formats), but Wine rewrites it whenever the language of Windows programs
+    changes, so changes made there are lost then.
+- Drawn or handled by WinCraft, which reads no Windows setting for them: the
+  desktop (background, wallpaper, icons), the taskbar and the Start menu (none
+  of Explorer's settings apply), and window focus and arrangement (WinCraft's
+  window manager: click to focus). Screen blanking, key repeat and pointer
+  movement belong to the display server. WinCraft has no setting for any of
+  these yet.
+
 ## Files and drives
 
 - C: is the Windows side of the person's home (Documents, Downloads,
