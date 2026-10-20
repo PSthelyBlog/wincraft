@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.12 — 2026-10-20
+
+A fix for the WinCraft Agent.
+
+- **The agent tests times of day in your local time.** Its sandbox starts
+  every command the way a restart does, before the boot hooks have run, so
+  a time zone set by a feature is missing there and the sandbox's clock
+  reads UTC. An agent building something for a time of day could test it
+  against the wrong clock, or convert times by hand and be off by an hour or
+  two, and again after a daylight saving change. Its rules now say so, ask
+  for features that read the local time, and show how to test in the
+  computer's time zone.
+- Everything else is as in 0.7.11.
+
 ## 0.7.11 — 2026-10-20
 
 A security fix for the WinCraft Agent's sandbox. Update if you use the agent.

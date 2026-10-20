@@ -19,7 +19,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-#define WC_VERSION      L"0.7.11"
+#define WC_VERSION      L"0.7.12"
 #define APP_NAME        L"WinCraft Assistant"
 
 /* Wine's prefix for native (Linux) paths, e.g. UNIX_ROOT L"\\proc\\meminfo". */
