@@ -3,7 +3,7 @@ OUT    ?= .
 CC      = x86_64-w64-mingw32-gcc
 WINDRES = x86_64-w64-mingw32-windres
 CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter -municode -mwindows -s
-LIBS    = -lshell32 -lshlwapi -lole32 -luuid -lcomctl32 -lgdi32 -lmsimg32 -luser32 -ladvapi32 -lurlmon
+LIBS    = -lshell32 -lshlwapi -lole32 -luuid -lcomctl32 -lgdiplus -lgdi32 -lmsimg32 -luser32 -ladvapi32 -lurlmon
 
 all: $(OUT)/wcshell.exe $(OUT)/wclistwin.exe
 

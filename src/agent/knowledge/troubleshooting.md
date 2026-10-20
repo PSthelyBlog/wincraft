@@ -106,7 +106,7 @@ the WinCraft Agent.
   - under `HKEY_CURRENT_USER\Control Panel\Mouse`: `MouseSensitivity`,
     `MouseSpeed`, `MouseThreshold1` and `MouseThreshold2` (pointer speed and
     acceleration belong to the display server, below), `MouseTrails`,
-    `SnapToDefaultButton`, `ActiveWindowTracking`, and `SwapMouseButtons`
+    `SnapToDefaultButton`, and `SwapMouseButtons`
     (Wine reports the buttons as swapped but does not swap the clicks; the
     display server can, below);
   - under `Control Panel\Desktop`: `MenuShowDelay`, `CaretWidth` (Wine's text
@@ -123,9 +123,10 @@ the WinCraft Agent.
   - the keyboard preference, screen reader, ShowSounds and audio description
     flags under `Control Panel\Accessibility`.
 - Not read at all: the pointer scheme and size (`Control Panel\Cursors`,
-  `CursorBaseSize` included), and the Windows 10 and 11 accent colour under
-  `Software\Microsoft\Windows\DWM`. Title bars take their colours from
-  `ActiveTitle` and `GradientActiveTitle` in `Control Panel\Colors`.
+  `CursorBaseSize` included). The Windows 10 and 11 accent colour
+  (`Software\Microsoft\Windows\DWM`) colours only WinCraft's own taskbar
+  and menus (below); title bars take their colours from `ActiveTitle` and
+  `GradientActiveTitle` in `Control Panel\Colors`.
 - Values Wine writes for itself, which look like settings:
   - under `Software\Wine\Fonts`: `LogPixels`, `Codepages`, and the
     `External Fonts` and `Cache` keys;
@@ -137,16 +138,52 @@ the WinCraft Agent.
   - `Control Panel\International` is a real setting (date, time and number
     formats), but Wine rewrites it whenever the language of Windows programs
     changes, so changes made there are lost then.
-- Drawn or handled by WinCraft, which reads no Windows setting for them: the
-  desktop (background, wallpaper, icons), the taskbar and the Start menu (none
-  of Explorer's settings apply), and window focus and arrangement (WinCraft's
-  window manager: click to focus). WinCraft has no setting for these yet.
+- Drawn or handled by WinCraft: the desktop, the taskbar, the Start menu and
+  window focus. They follow only the settings in "WinCraft's desktop and
+  taskbar" below; Explorer's other settings (taskbar position, desktop icon
+  size or spacing, combining taskbar buttons) do nothing here yet.
 - Belonging to the display server, which Windows programs follow: key
   repeat, screen blanking and sleep, pointer speed, and left-handed mouse
   buttons. WinCraft has no setting for them, but the WinCraft Agent can build
   a feature that sets them at each login with the display server's own tools
   (`xset`, `xinput`); turning the feature off undoes it after a restart. The
   pointer's speed has no effect on a virtual machine's tablet pointer.
+
+## WinCraft's desktop and taskbar
+
+WinCraft's desktop, taskbar and window manager follow these settings, all
+under `HKEY_CURRENT_USER`, which `set_registry_value` can change. They apply
+at once: WinCraft watches these keys, so nothing needs a restart. Change them
+yourself; the WinCraft Agent is not needed.
+
+- Desktop picture: `Control Panel\Desktop`, `Wallpaper` (text: the full
+  Windows or Linux path of a BMP, JPG, PNG or GIF picture, such as
+  `C:\users\user\Pictures\sea.jpg`; empty for none) and `WallpaperStyle`
+  (text: `10` fill the screen, the default; `6` fit; `2` stretch; `0` centre,
+  or tile with `TileWallpaper` = `1`).
+- Plain desktop colour, used when `Wallpaper` is empty: `Control Panel\Colors`,
+  `Background` (text, `R G B`). WinCraft's own value, `11 21 48`, means its
+  usual blue background.
+- Light taskbar and menus: `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`,
+  `SystemUsesLightTheme` (dword 1; 0 for dark, the default).
+- Accent colour of the taskbar and menus: `Software\Microsoft\Windows\DWM`,
+  `AccentColor` (dword `0xAABBGGRR`: green 0,154,60 is `0xFF3C9A00`).
+- Seconds on the clock: `Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`,
+  `ShowSecondsInSystemClock` (dword 1).
+- Open desktop icons with one click: `Software\WinCraft\Shell`,
+  `SingleClickOpen` (dword 1). WinCraft's own value: Windows keeps this
+  setting in a form the registry tool cannot write.
+- Hide the taskbar until the pointer reaches the bottom edge:
+  `Software\WinCraft\Shell`, `TaskbarAutoHide` (dword 1). WinCraft's own
+  value, for the same reason.
+- Focus follows the mouse: `Control Panel\Mouse`, `ActiveWindowTracking`
+  (dword 1), and how long the pointer must rest on a window first:
+  `Control Panel\Desktop`, `ActiveWndTrkTimeout` (dword, milliseconds; 0 at
+  once). As on Windows, the window gets the keyboard without coming to the
+  front, and an open menu stays open.
+- Alt+Tab switches windows: the window in front first, then the others, most
+  recently used first and minimized ones last. Tab moves on, Shift+Tab back,
+  releasing Alt switches, Esc cancels. There is nothing to set.
 
 ## Files and drives
 

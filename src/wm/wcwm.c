@@ -8,7 +8,8 @@
  *   - stacking, in layers:  menus/tooltips > active full-screen window >
  *                           taskbar and always-on-top windows >
  *                           ordinary windows > desktop
- *   - keyboard focus (click to focus, new windows take the focus)
+ *   - keyboard focus (click to focus, or focus follows the mouse when
+ *     Windows' ActiveWindowTracking is on; new windows take the focus)
  *   - minimising (ICCCM iconify) and restoring
  *   - the work area: maximised windows stop above the taskbar
  *
@@ -17,6 +18,10 @@
  * recognised by window class and title.
  *
  *   usage: wcwm [taskbar-height]       (default: $WINCRAFT_TASKBAR or 44)
+ *
+ * The shell passes on the preferences that concern it in
+ * $XDG_RUNTIME_DIR/wcwm.conf ("key=value" lines: taskbar, autohide,
+ * focus_follows_mouse, focus_delay), read again whenever it changes.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -28,6 +33,10 @@
 #include <X11/Xatom.h>
 #include <X11/Xproto.h>
 #include <X11/cursorfont.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #define SHELL_CLASS     "wcshell.exe"
 #define MAX_WINDOWS     1024
@@ -72,7 +81,14 @@ static Window taskbar_win, desktop_win;
 
 static int adopt_shell_window(Window win);
 static Time last_time = CurrentTime;
-static int taskbar_height = 44;
+static int taskbar_height = 44;      /* what the work area leaves at the bottom */
+static int bar_height = 44;          /* the taskbar's own height */
+
+/* Preferences from the shell (wcwm.conf). */
+static int autohide, focus_follows_mouse;
+static long focus_delay;            /* ms the pointer rests on a window before it gets the focus */
+static struct client *pending_focus;
+static long pending_due;
 static int screen_w, screen_h;
 static int other_wm;
 
@@ -446,7 +462,7 @@ static struct client *manage(Window win)
     c->win = win;
     c->next = clients;
     clients = c;
-    XSelectInput(dpy, win, PropertyChangeMask);
+    XSelectInput(dpy, win, PropertyChangeMask | (focus_follows_mouse ? EnterWindowMask : 0));
     /* Click to focus: see the press first, then let the program have it. */
     XGrabButton(dpy, AnyButton, AnyModifier, win, False, ButtonPressMask,
                 GrabModeSync, GrabModeAsync, None, None);
@@ -468,6 +484,8 @@ static void unmanage(struct client *c)
         }
     if (was_focused)
         focused = NULL;
+    if (pending_focus == c)
+        pending_focus = NULL;
     free(c);
     update_client_list();
     if (was_focused)
@@ -754,6 +772,134 @@ static void on_property(XPropertyEvent *e)
         read_hints(c);
 }
 
+/* --------------------------------------------------------- preferences */
+
+static long now_ms(void)
+{
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000L + tv.tv_usec / 1000;
+}
+
+/* Read wcwm.conf again if it changed, and apply what changed. */
+static void check_prefs(void)
+{
+    static char path[512];
+    static time_t mtime;
+    static off_t size = -1;
+    static ino_t ino;
+    struct stat st;
+    char line[128];
+    FILE *f;
+    int new_autohide = 0, new_ffm = 0, new_bar = bar_height, height;
+    long new_delay = 0;
+    struct client *c;
+
+    if (!path[0]) {
+        const char *dir = getenv("XDG_RUNTIME_DIR");
+
+        snprintf(path, sizeof(path), "%s/wcwm.conf", dir && *dir ? dir : "/tmp");
+    }
+    /* the shell replaces the file on each change: a new inode */
+    if (stat(path, &st) || (st.st_ino == ino && st.st_mtime == mtime && st.st_size == size))
+        return;
+    ino = st.st_ino;
+    mtime = st.st_mtime;
+    size = st.st_size;
+    if (!(f = fopen(path, "r")))
+        return;
+    while (fgets(line, sizeof(line), f)) {
+        if (!strncmp(line, "taskbar=", 8)) new_bar = atoi(line + 8);
+        else if (!strncmp(line, "autohide=", 9)) new_autohide = atoi(line + 9);
+        else if (!strncmp(line, "focus_follows_mouse=", 20)) new_ffm = atoi(line + 20);
+        else if (!strncmp(line, "focus_delay=", 12)) new_delay = atol(line + 12);
+    }
+    fclose(f);
+
+    if (new_bar >= 16 && new_bar <= 200)
+        bar_height = new_bar;
+    autohide = new_autohide;
+    focus_delay = new_delay < 0 ? 0 : new_delay > 10000 ? 10000 : new_delay;
+    /* Hidden, the taskbar leaves a 2-pixel strip; maximised windows get the rest. */
+    height = autohide ? 2 : bar_height;
+    if (height != taskbar_height) {
+        taskbar_height = height;
+        update_workarea();
+        for (c = clients; c; c = c->next)
+            if (c->maximized)
+                apply_state_geometry(c);
+    }
+    if (new_ffm != focus_follows_mouse) {
+        focus_follows_mouse = new_ffm;
+        for (c = clients; c; c = c->next)
+            XSelectInput(dpy, c->win, PropertyChangeMask | (focus_follows_mouse ? EnterWindowMask : 0));
+        pending_focus = NULL;
+    }
+}
+
+/* Focus follows the mouse: the pointer entering a window gives it the focus,
+ * after focus_delay, if it is still there by then. */
+static void on_enter(XCrossingEvent *e)
+{
+    struct client *c;
+
+    last_time = e->time;
+    if (!focus_follows_mouse || e->mode != NotifyNormal || e->detail == NotifyInferior)
+        return;
+    c = find_client(e->window);
+    if (!c || c->iconic || c == focused)
+        return;
+    pending_focus = c;
+    pending_due = now_ms() + focus_delay;
+}
+
+/* Whether the input focus is on a window that closes when it loses it: the
+ * shell's Start menu, or a window this manager does not manage (Wine focuses
+ * those itself when they are activated). Moving the pointer away from one
+ * must leave it open, as on Windows. */
+static int popup_has_focus(void)
+{
+    Window f, parent, root_ret, *kids;
+    unsigned int n;
+    int revert;
+    XWindowAttributes wa;
+
+    XGetInputFocus(dpy, &f, &revert);
+    if (f == None || f == PointerRoot || f == root)
+        return 0;
+    /* the top-level window holding it */
+    for (;;) {
+        if (!XQueryTree(dpy, f, &root_ret, &parent, &kids, &n))
+            return 0;
+        if (kids)
+            XFree(kids);
+        if (parent == root || parent == None)
+            break;
+        f = parent;
+    }
+    if (find_client(f))
+        return is_shell_window(f, "Start");
+    return XGetWindowAttributes(dpy, f, &wa) && wa.override_redirect && wa.map_state == IsViewable;
+}
+
+static void focus_pending(void)
+{
+    struct client *c = pending_focus;
+    Window root_ret, child = None;
+    int rx, ry, wx, wy;
+    unsigned int mask;
+
+    if (!c || now_ms() < pending_due)
+        return;
+    pending_focus = NULL;
+    if (popup_has_focus())
+        return;
+    if (XQueryPointer(dpy, root, &root_ret, &child, &rx, &ry, &wx, &wy, &mask) && child == c->win &&
+        !c->iconic && c != focused)
+        focus_client(c);
+}
+
 /* ----------------------------------------------------------------- main */
 
 static void setup(void)
@@ -828,7 +974,7 @@ int main(int argc, char **argv)
     XEvent ev;
 
     if (h >= 0 && (argc > 1 || env))
-        taskbar_height = h;
+        taskbar_height = bar_height = h;
     dpy = XOpenDisplay(NULL);
     if (!dpy) {
         fprintf(stderr, "wcwm: cannot open display\n");
@@ -846,10 +992,32 @@ int main(int argc, char **argv)
         return 1;
     }
     setup();
+    check_prefs();
 
     for (;;) {
+        fd_set fds;
+        struct timeval tv = { 0, 250000 };
+        int fd = ConnectionNumber(dpy);
+
+        /* events first; between them, the preferences and a pending focus */
+        if (!XPending(dpy)) {
+            FD_ZERO(&fds);
+            FD_SET(fd, &fds);
+            if (pending_focus) {
+                long left = pending_due - now_ms();
+
+                if (left < 250)
+                    tv.tv_usec = left > 0 ? left * 1000 : 0;
+            }
+            select(fd + 1, &fds, NULL, NULL, &tv);
+            check_prefs();
+            focus_pending();
+            if (!XPending(dpy))
+                continue;
+        }
         XNextEvent(dpy, &ev);
         switch (ev.type) {
+        case EnterNotify:      on_enter(&ev.xcrossing); break;
         case MapRequest:       on_map_request(&ev.xmaprequest); break;
         case MapNotify:        on_map_notify(&ev.xmap); break;
         case UnmapNotify:      on_unmap(&ev.xunmap); break;

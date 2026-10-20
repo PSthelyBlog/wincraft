@@ -32,6 +32,7 @@
 #include <shlwapi.h>
 #include <commctrl.h>
 #include <urlmon.h>
+#include <stdio.h>
 #include <wchar.h>
 
 #define WC_VERSION      L"0.7.13"
@@ -50,16 +51,28 @@
 #define MENU_FOOTER     58
 #define MENU_ROW        44
 
-/* ---- palette ---- */
-#define C_BAR           RGB(22, 26, 38)
-#define C_BAR_EDGE      RGB(48, 54, 74)
-#define C_HOT           RGB(44, 50, 70)
-#define C_ACTIVE        RGB(58, 66, 92)
-#define C_ACCENT        RGB(74, 165, 240)
-#define C_TEXT          RGB(236, 239, 244)
-#define C_DIM           RGB(150, 158, 176)
-#define C_MENU          RGB(28, 32, 46)
-#define C_MENU_ALT      RGB(36, 41, 58)
+/* ---- palette: dark, or light when Windows' "light system" setting is on ---- */
+struct palette {
+    COLORREF bar, bar_edge, hot, active, accent, text, dim, menu, menu_alt;
+};
+static const struct palette dark_palette = {
+    RGB(22, 26, 38), RGB(48, 54, 74), RGB(44, 50, 70), RGB(58, 66, 92), RGB(74, 165, 240),
+    RGB(236, 239, 244), RGB(150, 158, 176), RGB(28, 32, 46), RGB(36, 41, 58),
+};
+static const struct palette light_palette = {
+    RGB(238, 240, 244), RGB(206, 211, 222), RGB(222, 226, 234), RGB(204, 211, 226), RGB(0, 103, 192),
+    RGB(24, 28, 36), RGB(96, 104, 120), RGB(246, 247, 250), RGB(232, 235, 241),
+};
+static struct palette g_pal;
+#define C_BAR           g_pal.bar
+#define C_BAR_EDGE      g_pal.bar_edge
+#define C_HOT           g_pal.hot
+#define C_ACTIVE        g_pal.active
+#define C_ACCENT        g_pal.accent
+#define C_TEXT          g_pal.text
+#define C_DIM           g_pal.dim
+#define C_MENU          g_pal.menu
+#define C_MENU_ALT      g_pal.menu_alt
 #define C_WALL_A        RGB(11, 21, 48)
 #define C_WALL_B        RGB(24, 86, 138)
 
@@ -67,8 +80,10 @@
 #define WM_TOGGLE_START (WM_APP + 1)
 #define WM_SHELL_CMD    (WM_APP + 2)
 #define WM_WINDOWS_CHANGED (WM_APP + 3)
+#define WM_PREFS_CHANGED (WM_APP + 4)
+#define WM_SWITCHER     (WM_APP + 5)    /* wParam: one of SWITCH_* below */
 enum { CMD_RUN = 1, CMD_FILES, CMD_SHOW_DESKTOP };
-enum { TIMER_TASKS = 1, TIMER_CLOCK, TIMER_ICONS, TIMER_EVENT };
+enum { TIMER_TASKS = 1, TIMER_CLOCK, TIMER_ICONS, TIMER_EVENT, TIMER_AUTOHIDE, TIMER_PREFS };
 enum { HK_RUN = 1, HK_FILES, HK_DESKTOP, HK_START };
 enum { IDM_RESTORE = 100, IDM_MINIMIZE, IDM_MAXIMIZE, IDM_CLOSE,
        IDM_REFRESH, IDM_OPEN_DESKTOP, IDM_RUN, IDM_ABOUT, IDM_SETTINGS };
@@ -453,6 +468,250 @@ static int popup_menu(HMENU menu, UINT flags, int x, int y)
 }
 
 /* ======================================================================
+ * Preferences: Windows' own settings where Windows has one, so that the
+ * assistant, regedit and programs that change them (SystemParametersInfo)
+ * all work; WinCraft's own values only where Windows keeps the setting in
+ * a binary blob. Read at start and again whenever these keys change.
+ * ====================================================================== */
+
+#define KEY_DESKTOP     L"Control Panel\\Desktop"
+#define KEY_ADVANCED    L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
+#define KEY_PERSONALIZE L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+#define KEY_DWM         L"Software\\Microsoft\\Windows\\DWM"
+#define KEY_WINCRAFT    L"Software\\WinCraft\\Shell"
+
+static struct prefs {
+    WCHAR wallpaper[MAX_PATH];  /* Control Panel\Desktop: Wallpaper (a picture) */
+    int style;                  /* WallpaperStyle: 0 centre, 2 stretch, 6 fit, 10 fill, 22 span */
+    BOOL tile;                  /* TileWallpaper */
+    BOOL has_background;        /* Control Panel\Colors: Background, when not WinCraft's own */
+    COLORREF background;
+    BOOL light;                 /* Personalize: SystemUsesLightTheme */
+    BOOL has_accent;            /* DWM: AccentColor */
+    COLORREF accent;
+    BOOL seconds;               /* Explorer\Advanced: ShowSecondsInSystemClock */
+    BOOL single_click;          /* WinCraft\Shell: SingleClickOpen */
+    BOOL autohide;              /* WinCraft\Shell: TaskbarAutoHide */
+    BOOL focus_follows_mouse;   /* Control Panel\Mouse: ActiveWindowTracking */
+    DWORD focus_delay;          /* Control Panel\Desktop: ActiveWndTrkTimeout, ms */
+} g_prefs;
+
+/* A number stored as a dword, or as text as Windows often does ("10"). */
+static DWORD reg_number(const WCHAR *key, const WCHAR *name, DWORD def, BOOL *found)
+{
+    BYTE data[64];
+    DWORD type, size = sizeof(data) - sizeof(WCHAR), value = def;
+    HKEY k;
+
+    if (found)
+        *found = FALSE;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &k))
+        return def;
+    if (!RegQueryValueExW(k, name, NULL, &type, data, &size)) {
+        if (type == REG_DWORD && size >= sizeof(DWORD)) {
+            value = *(DWORD *)data;
+            if (found) *found = TRUE;
+        } else if (type == REG_SZ || type == REG_EXPAND_SZ) {
+            ((WCHAR *)data)[size / sizeof(WCHAR)] = 0;
+            if (((WCHAR *)data)[0]) {
+                value = (DWORD)_wtoi((WCHAR *)data);
+                if (found) *found = TRUE;
+            }
+        }
+    }
+    RegCloseKey(k);
+    return value;
+}
+
+static void reg_text(const WCHAR *key, const WCHAR *name, WCHAR *out, DWORD chars)
+{
+    DWORD type, size = (chars - 1) * sizeof(WCHAR);
+    HKEY k;
+
+    out[0] = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &k))
+        return;
+    if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)out, &size) ||
+        (type != REG_SZ && type != REG_EXPAND_SZ))
+        size = 0;
+    out[size / sizeof(WCHAR)] = 0;
+    RegCloseKey(k);
+}
+
+static void read_prefs(struct prefs *p)
+{
+    WCHAR buf[64];
+    int r, g, b;
+    BOOL found;
+    DWORD accent;
+
+    ZeroMemory(p, sizeof(*p));
+    reg_text(KEY_DESKTOP, L"Wallpaper", p->wallpaper, ARRAYSIZE(p->wallpaper));
+    p->style = (int)reg_number(KEY_DESKTOP, L"WallpaperStyle", 10, NULL);
+    p->tile = reg_number(KEY_DESKTOP, L"TileWallpaper", 0, NULL) != 0;
+    reg_text(L"Control Panel\\Colors", L"Background", buf, ARRAYSIZE(buf));
+    if (swscanf(buf, L"%d %d %d", &r, &g, &b) == 3 && RGB(r, g, b) != C_WALL_A) {
+        p->has_background = TRUE;
+        p->background = RGB(r, g, b);
+    }
+    p->light = reg_number(KEY_PERSONALIZE, L"SystemUsesLightTheme", 0, NULL) != 0;
+    accent = reg_number(KEY_DWM, L"AccentColor", 0, &found);
+    if (found) {
+        p->has_accent = TRUE;
+        p->accent = RGB(accent & 0xff, (accent >> 8) & 0xff, (accent >> 16) & 0xff);   /* 0xAABBGGRR */
+    }
+    p->seconds = reg_number(KEY_ADVANCED, L"ShowSecondsInSystemClock", 0, NULL) != 0;
+    p->single_click = reg_number(KEY_WINCRAFT, L"SingleClickOpen", 0, NULL) != 0;
+    p->autohide = reg_number(KEY_WINCRAFT, L"TaskbarAutoHide", 0, NULL) != 0;
+    p->focus_follows_mouse = reg_number(L"Control Panel\\Mouse", L"ActiveWindowTracking", 0, NULL) != 0;
+    p->focus_delay = reg_number(KEY_DESKTOP, L"ActiveWndTrkTimeout", 0, NULL);
+}
+
+static void place_bar(BOOL hidden);
+static void autohide_later(void);
+
+static void set_palette(void)
+{
+    g_pal = g_prefs.light ? light_palette : dark_palette;
+    if (g_prefs.has_accent)
+        g_pal.accent = g_prefs.accent;
+}
+
+/* What the window manager (wcwm, a Linux program) needs of these, as a small
+ * file in the session's runtime folder, which it reads when it changes. */
+static void write_wm_prefs(void)
+{
+    WCHAR dir[MAX_PATH], path[MAX_PATH], tmp[MAX_PATH], *p;
+    char text[160];
+    HANDLE h;
+    DWORD done;
+    int n;
+
+    /* Wine passes XDG_* variables on to Windows programs renamed WINE_HOST_XDG_* */
+    if ((!GetEnvironmentVariableW(L"WINE_HOST_XDG_RUNTIME_DIR", dir, ARRAYSIZE(dir)) &&
+         !GetEnvironmentVariableW(L"XDG_RUNTIME_DIR", dir, ARRAYSIZE(dir))) || dir[0] != '/')
+        return;
+    for (p = dir; *p; p++)
+        if (*p == '/') *p = '\\';
+    _snwprintf(path, ARRAYSIZE(path), L"\\\\?\\unix%ls\\wcwm.conf", dir);
+    _snwprintf(tmp, ARRAYSIZE(tmp), L"\\\\?\\unix%ls\\wcwm.conf.new", dir);
+    path[ARRAYSIZE(path) - 1] = tmp[ARRAYSIZE(tmp) - 1] = 0;
+    n = snprintf(text, sizeof(text), "taskbar=%d\nautohide=%d\nfocus_follows_mouse=%d\nfocus_delay=%lu\n",
+                 g_bar_h, g_prefs.autohide, g_prefs.focus_follows_mouse, (unsigned long)g_prefs.focus_delay);
+    h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    WriteFile(h, text, (DWORD)n, &done, NULL);
+    CloseHandle(h);
+    MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING);
+}
+
+/* Wake the taskbar when one of the keys the preferences come from changes.
+ * The assistant writes the registry without telling anyone, so watching the
+ * keys matters as much as WM_SETTINGCHANGE does. */
+static DWORD WINAPI watch_prefs(void *arg)
+{
+    static const WCHAR *keys[] = {
+        L"Control Panel", L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        KEY_PERSONALIZE, KEY_DWM, KEY_WINCRAFT,
+    };
+    HANDLE events[ARRAYSIZE(keys)];
+    HKEY handles[ARRAYSIZE(keys)];
+    unsigned i, n = 0;
+
+    for (i = 0; i < ARRAYSIZE(keys); i++) {
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, keys[i], 0, NULL, 0, KEY_NOTIFY, NULL, &handles[n], NULL))
+            continue;
+        events[n] = CreateEventW(NULL, FALSE, FALSE, NULL);
+        RegNotifyChangeKeyValue(handles[n], TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+                                events[n], TRUE);
+        n++;
+    }
+    while (n) {
+        DWORD w = WaitForMultipleObjects(n, events, FALSE, INFINITE);
+
+        if (w >= WAIT_OBJECT_0 + n)
+            break;
+        i = w - WAIT_OBJECT_0;
+        RegNotifyChangeKeyValue(handles[i], TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+                                events[i], TRUE);
+        if (g_bar)
+            PostMessageW(g_bar, WM_PREFS_CHANGED, 0, 0);
+    }
+    return 0;
+}
+
+/* ---- pictures, through Windows' GDI+ (gdiplus.dll), declared here for C ---- */
+typedef struct { UINT32 version; void *debug_callback; BOOL no_thread; BOOL no_codecs; } gdip_input;
+int WINAPI GdiplusStartup(ULONG_PTR *token, const gdip_input *input, void *output);
+int WINAPI GdipLoadImageFromFile(const WCHAR *file, void **image);
+int WINAPI GdipGetImageWidth(void *image, UINT *width);
+int WINAPI GdipGetImageHeight(void *image, UINT *height);
+int WINAPI GdipCreateFromHDC(HDC dc, void **graphics);
+int WINAPI GdipSetInterpolationMode(void *graphics, int mode);
+int WINAPI GdipDrawImageRectI(void *graphics, void *image, INT x, INT y, INT width, INT height);
+int WINAPI GdipDeleteGraphics(void *graphics);
+int WINAPI GdipDisposeImage(void *image);
+
+/* Draw the picture at path over the whole screen the way Windows' styles
+ * do; FALSE when it cannot be read. A Linux path ("/home/...") works too. */
+static BOOL draw_picture(HDC dc, const WCHAR *path, int style, BOOL tile)
+{
+    static ULONG_PTR token;
+    WCHAR file[MAX_PATH + 16];
+    void *image = NULL, *graphics = NULL;
+    UINT iw = 0, ih = 0;
+    int x, y, w, h;
+    BOOL ok = FALSE;
+
+    if (!token) {
+        gdip_input input = { 1, NULL, FALSE, FALSE };
+
+        if (GdiplusStartup(&token, &input, NULL))
+            return FALSE;
+    }
+    if (path[0] == '/') {
+        WCHAR *p;
+
+        _snwprintf(file, ARRAYSIZE(file), L"\\\\?\\unix%ls", path);
+        file[ARRAYSIZE(file) - 1] = 0;
+        for (p = file + 8; *p; p++)
+            if (*p == '/') *p = '\\';
+    } else {
+        ExpandEnvironmentStringsW(path, file, ARRAYSIZE(file));
+    }
+    if (GdipLoadImageFromFile(file, &image) || !image)
+        return FALSE;
+    GdipGetImageWidth(image, &iw);
+    GdipGetImageHeight(image, &ih);
+    if (iw && ih && !GdipCreateFromHDC(dc, &graphics)) {
+        GdipSetInterpolationMode(graphics, 7);          /* high-quality bicubic */
+        if (tile && style == 0) {
+            for (y = 0; y < g_sh; y += ih)
+                for (x = 0; x < g_sw; x += iw)
+                    GdipDrawImageRectI(graphics, image, x, y, iw, ih);
+        } else {
+            if (style == 2) {                           /* stretch */
+                w = g_sw; h = g_sh;
+            } else if (style == 0) {                    /* centre, at its own size */
+                w = iw; h = ih;
+            } else {                                    /* 6 fit: all of it; 10, 22: fill the screen */
+                BOOL wider = (double)iw / ih > (double)g_sw / g_sh;
+                BOOL by_width = style == 6 ? wider : !wider;
+
+                w = by_width ? g_sw : (int)((double)iw * g_sh / ih);
+                h = by_width ? (int)((double)ih * g_sw / iw) : g_sh;
+            }
+            GdipDrawImageRectI(graphics, image, (g_sw - w) / 2, (g_sh - h) / 2, w, h);
+        }
+        GdipDeleteGraphics(graphics);
+        ok = TRUE;
+    }
+    GdipDisposeImage(image);
+    return ok;
+}
+
+/* ======================================================================
  * Desktop: wallpaper and icons
  * ====================================================================== */
 
@@ -467,7 +726,7 @@ static void hide_menu(void);
 static void layout_tasks(void);
 
 static struct icon_item *g_icons;
-static int g_nicons, g_icon_sel = -1;
+static int g_nicons, g_icon_sel = -1, g_icon_pressed = -1;
 static HBITMAP g_wallpaper;
 static DWORD g_icons_stamp;
 
@@ -491,6 +750,19 @@ static void make_wallpaper(void)
         DeleteObject(g_wallpaper);
     g_wallpaper = CreateCompatibleBitmap(screen, g_sw, g_sh);
     old = SelectObject(dc, g_wallpaper);
+
+    /* Windows' own background settings: a picture, or a plain colour. */
+    if (g_prefs.wallpaper[0] || g_prefs.has_background) {
+        SetRect(&rc, 0, 0, g_sw, g_sh);
+        fill(dc, &rc, g_prefs.has_background ? g_prefs.background : C_WALL_A);
+        if (!g_prefs.wallpaper[0] || draw_picture(dc, g_prefs.wallpaper, g_prefs.style, g_prefs.tile)) {
+            SelectObject(dc, old);
+            DeleteDC(dc);
+            ReleaseDC(NULL, screen);
+            return;
+        }
+        /* a picture that cannot be read: WinCraft's own background instead */
+    }
 
     for (i = 0; i < 4; i++) {
         v[i].x = (i & 1) ? g_sw : 0;
@@ -723,7 +995,7 @@ static LRESULT CALLBACK desktop_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_sh = HIWORD(lp);
         make_wallpaper();
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, g_sw, g_sh, SWP_NOACTIVATE);
-        SetWindowPos(g_bar, NULL, 0, g_sh - BAR_H, g_sw, BAR_H, SWP_NOZORDER | SWP_NOACTIVATE);
+        place_bar(g_prefs.autohide && !IsWindowVisible(g_menu));
         hide_menu();
         load_icons();
         layout_tasks();
@@ -748,15 +1020,29 @@ static LRESULT CALLBACK desktop_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_icon_sel = hit;
             InvalidateRect(hwnd, NULL, FALSE);
         }
+        g_icon_pressed = msg == WM_LBUTTONDOWN ? hit : -1;
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        /* One click opens, when chosen (WinCraft\Shell: SingleClickOpen). */
+        int hit = icon_at(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+
+        if (g_prefs.single_click && hit >= 0 && hit == g_icon_pressed)
+            open_path(g_icons[hit].path, NULL);
+        g_icon_pressed = -1;
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
         int hit = icon_at(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
 
-        if (hit >= 0)
+        if (hit >= 0 && !g_prefs.single_click)      /* the first click opened it already */
             open_path(g_icons[hit].path, NULL);
         return 0;
     }
+    case WM_SETTINGCHANGE:
+        if (g_bar)
+            PostMessageW(g_bar, WM_PREFS_CHANGED, 0, 0);
+        return 0;
     case WM_RBUTTONUP: {
         POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
 
@@ -1114,11 +1400,13 @@ static void hide_menu(void)
     if (IsWindowVisible(g_menu)) {
         ShowWindow(g_menu, SW_HIDE);
         InvalidateRect(g_bar, NULL, FALSE);
+        autohide_later();
     }
 }
 
 static void show_menu(void)
 {
+    place_bar(FALSE);               /* a hidden taskbar comes back with the menu */
     load_programs();
     g_menu_btn = -1;
     g_menu_h = min(620, g_sh - BAR_H - 16);
@@ -1487,7 +1775,8 @@ static void paint_bar(HWND hwnd)
 
     /* clock */
     GetLocalTime(&now);
-    GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &now, NULL, buf, ARRAYSIZE(buf));
+    GetTimeFormatW(LOCALE_USER_DEFAULT, g_prefs.seconds ? 0 : TIME_NOSECONDS, &now, NULL, buf,
+                   ARRAYSIZE(buf));
     SetRect(&rc, g_sw - CLOCK_W - PEEK_W, 5, g_sw - PEEK_W - 8, BAR_H / 2 + 2);
     text(mem, buf, &rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER, g_font, C_TEXT);
     GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &now, NULL, buf, ARRAYSIZE(buf));
@@ -1581,12 +1870,176 @@ static void start_menu_context(HWND bar)
     DestroyMenu(menu);
 }
 
+/* ---- auto-hide (WinCraft\Shell: TaskbarAutoHide): a 2-pixel strip stays
+ * at the bottom edge, and the pointer reaching it brings the taskbar back */
+#define AUTOHIDE_STRIP  2
+static BOOL g_bar_hidden;
+
+static void place_bar(BOOL hidden)
+{
+    g_bar_hidden = hidden;
+    if (g_bar)
+        SetWindowPos(g_bar, HWND_TOPMOST, 0, hidden ? g_sh - AUTOHIDE_STRIP : g_sh - BAR_H, g_sw, BAR_H,
+                     SWP_NOACTIVATE);
+}
+
+static void autohide_later(void)
+{
+    if (g_prefs.autohide && g_bar)
+        SetTimer(g_bar, TIMER_AUTOHIDE, 800, NULL);
+}
+
+/* Read the preferences again and apply what changed. */
+static void apply_prefs(void)
+{
+    struct prefs old = g_prefs;
+
+    read_prefs(&g_prefs);
+    if (!memcmp(&old, &g_prefs, sizeof(old)))
+        return;
+    set_palette();
+    if (lstrcmpW(old.wallpaper, g_prefs.wallpaper) || old.style != g_prefs.style || old.tile != g_prefs.tile ||
+        old.has_background != g_prefs.has_background || old.background != g_prefs.background) {
+        make_wallpaper();
+        InvalidateRect(g_desktop, NULL, FALSE);
+    }
+    SetTimer(g_bar, TIMER_CLOCK, g_prefs.seconds ? 1000 : 5000, NULL);
+    if (old.autohide != g_prefs.autohide) {
+        KillTimer(g_bar, TIMER_AUTOHIDE);
+        if (g_prefs.autohide)
+            autohide_later();
+        else
+            place_bar(FALSE);
+    }
+    if (old.autohide != g_prefs.autohide || old.focus_follows_mouse != g_prefs.focus_follows_mouse ||
+        old.focus_delay != g_prefs.focus_delay)
+        write_wm_prefs();
+    InvalidateRect(g_bar, NULL, FALSE);
+    InvalidateRect(g_menu, NULL, FALSE);
+}
+
+/* ---- Alt+Tab: the windows, most recently used first; Tab moves on, Shift+Tab
+ * back, releasing Alt switches to the chosen one, Esc cancels ---- */
+#define SWITCH_W        480
+#define SWITCH_ROW      40
+#define SWITCH_MAX      14
+enum { SWITCH_OPEN, SWITCH_OPEN_BACK, SWITCH_NEXT, SWITCH_PREV, SWITCH_GO, SWITCH_CANCEL };
+static HWND g_switcher;
+static HWND g_switch_list[SWITCH_MAX];
+static int g_switch_n, g_switch_sel;
+
+static BOOL CALLBACK collect_switch(HWND hwnd, LPARAM lp)
+{
+    if (g_switch_n < SWITCH_MAX && is_task_window(hwnd))
+        g_switch_list[g_switch_n++] = hwnd;
+    return TRUE;
+}
+
+static void switcher_show(int step)
+{
+    HWND front = GetForegroundWindow(), list[SWITCH_MAX];
+    int h, i, n = 0, pass;
+
+    g_switch_n = 0;
+    EnumWindows(collect_switch, 0);     /* top first: the most recently used */
+    if (!g_switch_n)
+        return;
+    /* as on Windows: the window in front first, minimized ones last */
+    for (pass = 0; pass < 3; pass++)
+        for (i = 0; i < g_switch_n; i++) {
+            HWND w = g_switch_list[i];
+
+            if (pass == 0 ? w == front : w != front && !IsIconic(w) == (pass == 1))
+                list[n++] = w;
+        }
+    memcpy(g_switch_list, list, n * sizeof(HWND));
+    g_switch_sel = g_switch_n == 1 ? 0 : step > 0 ? 1 : g_switch_n - 1;
+    h = 16 + g_switch_n * SWITCH_ROW;
+    SetWindowPos(g_switcher, HWND_TOPMOST, (g_sw - SWITCH_W) / 2, (g_sh - h) / 2, SWITCH_W, h,
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    InvalidateRect(g_switcher, NULL, FALSE);
+}
+
+static void switcher_step(int step)
+{
+    if (!g_switch_n)
+        return;
+    g_switch_sel = (g_switch_sel + step + g_switch_n) % g_switch_n;
+    InvalidateRect(g_switcher, NULL, FALSE);
+}
+
+static void switcher_close(BOOL go)
+{
+    HWND target = g_switch_n ? g_switch_list[g_switch_sel] : NULL;
+
+    ShowWindow(g_switcher, SW_HIDE);
+    g_switch_n = 0;
+    if (go && target && IsWindow(target)) {
+        /* The keys went to the program in front, so only it may hand the
+         * front over (Wine keeps Windows' foreground lock); sharing its input
+         * for the moment of the switch makes the request its own. */
+        HWND front = GetForegroundWindow();
+        DWORD me = GetCurrentThreadId(), owner = front ? GetWindowThreadProcessId(front, NULL) : 0;
+        BOOL attached = owner && owner != me && AttachThreadInput(me, owner, TRUE);
+
+        if (IsIconic(target))
+            ShowWindowAsync(target, SW_RESTORE);
+        SetForegroundWindow(target);
+        if (attached)
+            AttachThreadInput(me, owner, FALSE);
+    }
+}
+
+static void paint_switcher(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT rc, row;
+    WCHAR title[256];
+    HICON icon;
+    int i;
+
+    GetClientRect(hwnd, &rc);
+    fill(dc, &rc, C_MENU);
+    for (i = 0; i < g_switch_n; i++) {
+        SetRect(&row, 8, 8 + i * SWITCH_ROW, rc.right - 8, 8 + (i + 1) * SWITCH_ROW);
+        if (i == g_switch_sel) {
+            fill(dc, &row, C_ACTIVE);
+            fill_xywh(dc, row.left, row.top + 6, 3, SWITCH_ROW - 12, C_ACCENT);
+        }
+        if ((icon = window_icon(g_switch_list[i])))
+            DrawIconEx(dc, row.left + 14, row.top + (SWITCH_ROW - 24) / 2, icon, 24, 24, 0, NULL, DI_NORMAL);
+        GetWindowTextW(g_switch_list[i], title, ARRAYSIZE(title));
+        row.left += 50;
+        row.right -= 10;
+        text(dc, title, &row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+             i == g_switch_sel ? g_font_bold : g_font, C_TEXT);
+    }
+    SetRect(&rc, 0, 0, rc.right, rc.bottom);
+    FrameRect(dc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));
+    EndPaint(hwnd, &ps);
+}
+
+static LRESULT CALLBACK switcher_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        paint_switcher(hwnd);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CREATE:
         SetTimer(hwnd, TIMER_TASKS, 1000, NULL);    /* safety net; events do the work */
-        SetTimer(hwnd, TIMER_CLOCK, 5000, NULL);
+        SetTimer(hwnd, TIMER_CLOCK, g_prefs.seconds ? 1000 : 5000, NULL);
         RegisterHotKey(hwnd, HK_RUN, MOD_WIN, 'R');
         RegisterHotKey(hwnd, HK_FILES, MOD_WIN, 'E');
         RegisterHotKey(hwnd, HK_DESKTOP, MOD_WIN, 'D');
@@ -1607,6 +2060,16 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             refresh_tasks();
         } else if (wp == TIMER_TASKS) {
             refresh_tasks();
+        } else if (wp == TIMER_AUTOHIDE) {
+            POINT pt;
+
+            KillTimer(hwnd, TIMER_AUTOHIDE);
+            GetCursorPos(&pt);
+            if (g_prefs.autohide && !IsWindowVisible(g_menu) && pt.y < g_sh - BAR_H)
+                place_bar(TRUE);
+        } else if (wp == TIMER_PREFS) {
+            KillTimer(hwnd, TIMER_PREFS);
+            apply_prefs();
         } else {
             InvalidateRect(hwnd, NULL, FALSE);
         }
@@ -1615,6 +2078,10 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return MA_NOACTIVATE;
     case WM_MOUSEMOVE: {
         int hot = bar_hit(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+
+        if (g_bar_hidden)
+            place_bar(FALSE);
+        KillTimer(hwnd, TIMER_AUTOHIDE);
 
         if (!g_tracking) {
             TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
@@ -1631,6 +2098,12 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_tracking = FALSE;
         g_bar_hot = -1;
         InvalidateRect(hwnd, NULL, FALSE);
+        autohide_later();
+        return 0;
+    case WM_PREFS_CHANGED:
+    case WM_SETTINGCHANGE:
+        /* changes come in bursts (one value at a time): apply them once */
+        SetTimer(hwnd, TIMER_PREFS, 150, NULL);
         return 0;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK: {
@@ -1666,6 +2139,16 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         else
             show_menu();
         return 0;
+    case WM_SWITCHER:
+        switch (wp) {
+        case SWITCH_OPEN:       switcher_show(1); break;
+        case SWITCH_OPEN_BACK:  switcher_show(-1); break;
+        case SWITCH_NEXT:       switcher_step(1); break;
+        case SWITCH_PREV:       switcher_step(-1); break;
+        case SWITCH_GO:         switcher_close(TRUE); break;
+        case SWITCH_CANCEL:     switcher_close(FALSE); break;
+        }
+        return 0;
     case WM_SHELL_CMD:
     case WM_HOTKEY:
         switch (wp) {
@@ -1691,16 +2174,61 @@ static void CALLBACK win_event(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG 
         PostMessageW(g_bar, WM_WINDOWS_CHANGED, 0, 0);
 }
 
-/* A lone press of the Windows key opens the Start menu. */
+/* A Ctrl press and release, so that the program that had Alt down does not
+ * take the lone Alt release that ends Alt+Tab for "open the menu bar". */
+static void tap_ctrl(void)
+{
+    INPUT in[2];
+
+    ZeroMemory(in, sizeof(in));
+    in[0].type = in[1].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = in[1].ki.wVk = VK_CONTROL;
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+/* A lone press of the Windows key opens the Start menu; Alt+Tab switches
+ * windows. The hook only decides and leaves the work to the taskbar, so as
+ * not to hold up the keyboard. */
 static LRESULT CALLBACK kbd_hook(int code, WPARAM wp, LPARAM lp)
 {
-    static BOOL win_down, combo;
+    static BOOL win_down, combo, alt_down, shift_down, switching;
 
     if (code == HC_ACTION) {
         const KBDLLHOOKSTRUCT *k = (const KBDLLHOOKSTRUCT *)lp;
         BOOL is_win = k->vkCode == VK_LWIN || k->vkCode == VK_RWIN;
+        BOOL down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
 
-        if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN) {
+        if (!(k->flags & LLKHF_INJECTED)) {
+            if (k->vkCode == VK_LMENU || k->vkCode == VK_RMENU || k->vkCode == VK_MENU) {
+                alt_down = down;
+                if (!down && switching) {
+                    switching = FALSE;
+                    PostMessageW(g_bar, WM_SWITCHER, SWITCH_GO, 0);
+                }
+            } else if (k->vkCode == VK_LSHIFT || k->vkCode == VK_RSHIFT || k->vkCode == VK_SHIFT) {
+                shift_down = down;
+            } else if (k->vkCode == VK_TAB && alt_down) {
+                if (down) {
+                    if (!switching) {
+                        switching = TRUE;
+                        tap_ctrl();
+                        PostMessageW(g_bar, WM_SWITCHER, shift_down ? SWITCH_OPEN_BACK : SWITCH_OPEN, 0);
+                    } else {
+                        PostMessageW(g_bar, WM_SWITCHER, shift_down ? SWITCH_PREV : SWITCH_NEXT, 0);
+                    }
+                }
+                return 1;                   /* the program does not see this Tab */
+            } else if (k->vkCode == VK_ESCAPE && switching) {
+                if (down) {
+                    switching = FALSE;
+                    PostMessageW(g_bar, WM_SWITCHER, SWITCH_CANCEL, 0);
+                }
+                return 1;
+            }
+        }
+
+        if (down) {
             if (is_win && !win_down) {
                 win_down = TRUE;
                 combo = FALSE;
@@ -2681,7 +3209,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     wc.lpfnWndProc = menu_proc;
     wc.lpszClassName = L"WinCraftStartMenu";
     RegisterClassExW(&wc);
+    wc.lpfnWndProc = switcher_proc;
+    wc.lpszClassName = L"WinCraftSwitcher";
+    RegisterClassExW(&wc);
 
+    read_prefs(&g_prefs);
+    set_palette();
     apply_system_metrics();
     make_wallpaper();
     load_icons();
@@ -2694,12 +3227,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
                             0, g_sh - BAR_H, g_sw, BAR_H, NULL, NULL, inst, NULL);
     g_menu = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"WinCraftStartMenu", L"Start",
                              WS_POPUP, 0, 0, MENU_W, 400, NULL, NULL, inst, NULL);
+    g_switcher = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"WinCraftSwitcher",
+                                 L"Switch windows", WS_POPUP, 0, 0, SWITCH_W, 100, NULL, NULL, inst, NULL);
     if (!g_desktop || !g_bar || !g_menu)
         return 1;
 
     SetWindowPos(g_desktop, HWND_BOTTOM, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     ShowWindow(g_bar, SW_SHOWNOACTIVATE);
+    autohide_later();
+    write_wm_prefs();
+    CloseHandle(CreateThread(NULL, 0, watch_prefs, NULL, 0, NULL));
     refresh_tasks();
     g_kbd_hook = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_hook, inst, 0);
     SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, NULL, win_event, 0, 0,
