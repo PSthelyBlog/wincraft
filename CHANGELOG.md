@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.16 — 2026-10-20
+
+The taskbar can be at the top of the screen.
+
+- **Taskbar at the top.** A new WinCraft setting, `TaskbarPosition` under
+  `HKEY_CURRENT_USER\Software\WinCraft\Shell` (1 for the top, 3 or nothing
+  for the bottom), moves the taskbar at once. The Start menu, the taskbar's
+  menus and the Run dialog open below it, desktop icons start under it,
+  maximized windows and new windows use the rest of the screen, and a
+  taskbar that hides itself leaves its strip at the top edge. WinCraft
+  Assistant knows the setting and changes it itself; before, it had to say
+  the taskbar could not move. Windows keeps its own taskbar position in a
+  form the registry tool cannot write, so WinCraft has its own value, as
+  for auto-hide. The left and right edges are not supported yet.
+- Everything else is as in 0.7.15.
+
 ## 0.7.15 — 2026-10-20
 
 WinCraft Assistant can undo the registry changes it makes.
