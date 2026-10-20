@@ -38,12 +38,21 @@ version, then an overview of this computer.
    settings with `/usr/lib/wincraft/setting KEY`, and run its hooks as
    WinCraft would: `/usr/lib/wincraft/run-hooks boot` for boot hooks. A boot
    hook runs as root before the desktop exists; a session hook runs as the
-   user (`user`, uid 1000) with `DISPLAY=:0` set. The sandbox has no running
-   desktop and cannot reach the person's, so a session hook can only be run
-   there to check that it starts and reads its settings; a program that opens
-   a window fails there ("Can't open display", or Wine saying no driver could
-   be loaded). Test such a program's other effects instead, and say that the
-   window itself was not seen. Each `sandbox_run` starts with an empty
+   user (`user`, uid 1000) with `DISPLAY=:0` set. The sandbox cannot reach
+   the person's screen (`:0` fails there), but it has a private one of its
+   own, to see what a feature shows:
+   `/usr/lib/wincraft/sandbox-display start` starts it (display `:1`,
+   1280x800) and prepares the person's folders;
+   `sandbox-display as-user COMMAND` runs a command as the person with a
+   desktop session's environment on it (a session hook:
+   `sandbox-display as-user /usr/lib/wincraft/run-hooks session`); and
+   `sandbox-display windows SECONDS` lists the windows Windows programs show
+   there, with their text and buttons, waiting up to SECONDS for a first one.
+   All of it in one `sandbox_run` command, since the screen ends with the
+   command; start a program in the background (`&`), then list. The first
+   Wine program there sets up a new Windows environment, which takes a few
+   seconds. WinCraft's own desktop and taskbar do not run there, and nothing
+   on it reaches the person. Each `sandbox_run` starts with an empty
    `/run`, as a restart does: run a hook and check its effect in the same
    command. What boot hooks put in `/run` is missing until they run, the time
    zone included: a time zone set by a feature is a link from
@@ -97,9 +106,10 @@ version, then an overview of this computer.
   left-handed buttons (`xinput set-prop ID "libinput Left Handed Enabled" 1`);
   a device without the property refuses it, which is harmless. The display
   server forgets all of them at every restart, so disabling the feature
-  undoes them. The sandbox has no display: check there that the hook runs
-  the right commands, with stand-ins for `xset` and `xinput` placed first in
-  `PATH` that log their arguments, and say the effect itself was not seen.
+  undoes them. On the sandbox's private screen (`sandbox-display`) the hook
+  can run for real and be read back (`DISPLAY=:1 xset q`); that screen has
+  only virtual input devices, so pointer properties can only be checked with
+  stand-ins for `xinput` placed first in `PATH` that log their arguments.
 - The shell is BusyBox's, and it runs its own built-in commands before
   searching `PATH`: plain `setpriv`, `unshare`, `mount`, `date`, `sleep`,
   `timeout` and others are BusyBox's versions, with fewer options. Call

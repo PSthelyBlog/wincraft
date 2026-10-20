@@ -26,6 +26,8 @@ xorg-xrandr
 # (xset), pointer speed and left-handed buttons (xinput)
 xorg-xset
 xorg-xinput
+# the WinCraft Agent's sandbox: a private virtual screen (sandbox-display)
+xorg-server-xvfb
 mesa
 
 # -- device management (udev only; systemd itself is pruned)

@@ -1,0 +1,64 @@
+#!/bin/sh
+# sandbox-display - a private screen for the WinCraft Agent's sandbox.
+#
+#   sandbox-display start            start a virtual screen (display :1,
+#                                    1280x800) and the person's folders
+#                                    (/home/user, /run/user/1000)
+#   sandbox-display as-user CMD...   run CMD as the person (uid 1000) with a
+#                                    desktop session's environment, on it
+#   sandbox-display windows [SECS]   list the windows Windows programs show on
+#                                    it, with their text, waiting up to SECS
+#                                    for a first one
+#
+# All three belong in one sandbox_run command: the screen is a process of that
+# command and ends with it. It listens only on its socket file in the
+# sandbox's own /tmp, so nothing outside the sandbox can reach it, and the
+# person's real screen stays out of reach (WinCraft's display server accepts
+# only programs outside the sandbox).
+PATH=/usr/bin
+D=:1
+AS_USER="/usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups"
+SESSION="/usr/bin/env -i HOME=/home/user USER=user LOGNAME=user PATH=/usr/bin
+    LANG=${LANG:-C.UTF-8} DISPLAY=$D XDG_RUNTIME_DIR=/run/user/1000
+    WINEPREFIX=/home/user/.wine WINEDEBUG=-all WINEDLLOVERRIDES=winemenubuilder.exe=d
+    EGL_LOG_LEVEL=fatal"
+
+case "$1" in
+start)
+    mkdir -p /home/user /run/user/1000 || exit 1
+    chown 1000:1000 /home/user /run/user/1000 && chmod 700 /run/user/1000
+    # a lock or socket left by an earlier command's screen (/tmp outlives it)
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+    /usr/bin/Xvfb $D -nolisten tcp -nolisten local -screen 0 1280x800x24 \
+        > /tmp/sandbox-display.log 2>&1 &
+    n=0
+    until [ -S /tmp/.X11-unix/X1 ] && DISPLAY=$D /usr/bin/xset q > /dev/null 2>&1; do
+        n=$((n + 1))
+        if [ "$n" -gt 50 ]; then
+            echo "sandbox-display: the screen did not start:"
+            tail -5 /tmp/sandbox-display.log
+            exit 1
+        fi
+        sleep 0.2
+    done
+    # the person's Windows environment, set up once here rather than by two
+    # programs started at the same moment
+    (cd /home/user && $AS_USER $SESSION /usr/bin/wineboot --init > /dev/null 2>&1)
+    echo "sandbox-display: screen $D ready (1280x800), with /home/user, /run/user/1000"
+    echo "and a new Windows environment in /home/user/.wine"
+    ;;
+as-user)
+    shift
+    [ $# -gt 0 ] || { echo "usage: sandbox-display as-user COMMAND [ARG...]"; exit 2; }
+    cd /home/user 2>/dev/null
+    exec $AS_USER $SESSION "$@"
+    ;;
+windows)
+    cd /home/user 2>/dev/null
+    exec $AS_USER $SESSION /usr/bin/wine /usr/lib/wincraft/wclistwin.exe "${2:-0}"
+    ;;
+*)
+    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

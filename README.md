@@ -302,7 +302,9 @@ with the task:
    load kernel modules, use devices or trace other programs, and the
    kernel's settings (`/proc/sys`) are read-only to it; it has its own
    computer name. It cannot reach your screen or keyboard either: the display
-   server only accepts programs outside the sandbox.
+   server only accepts programs outside the sandbox. To see what a feature
+   shows, it has a private screen of its own, which nothing outside the
+   sandbox can reach.
 3. **The result.** It builds a feature (above) in the sandbox and tests it
    there. Then it shows you the feature's files in full, and lists every
    other change it made in the sandbox. Only if you *Approve* is the feature

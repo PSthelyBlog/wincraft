@@ -28,7 +28,7 @@ WHOLE = [
     "wine", "wine-mono",
     "libx11", "xkeyboard-config", "xorg-server", "xorg-server-common",
     "xf86-input-libinput", "libinput", "libwacom", "xorg-xkbcomp",
-    "xorg-setxkbmap", "xorg-xrandr", "xorg-xset", "xorg-xinput",
+    "xorg-setxkbmap", "xorg-xrandr", "xorg-xset", "xorg-xinput", "xorg-server-xvfb",
     "mesa", "libglvnd",
     "fontconfig", "ttf-liberation",
     "alsa-lib",
