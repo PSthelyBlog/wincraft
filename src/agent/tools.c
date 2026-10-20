@@ -1710,10 +1710,12 @@ const tool_def g_tools[] = {
       "\"program\":{\"type\":\"string\",\"description\":\"e.g. game.exe; empty for all programs\"}},"
       "\"required\":[\"dll\",\"mode\"]}" },
     { "set_registry_value", TIER_CHANGE,
-      "Set a value under HKEY_CURRENT_USER (only there). type is string or dword. Needs the person's "
+      "Set a value under HKEY_CURRENT_USER (only there), type string or dword; or delete it with type "
+      "delete (data is ignored), which puts it back to not set, how Windows marks most defaults. The "
+      "result says what the value was before, which is how to undo the change. Needs the person's "
       "permission.",
       "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},"
-      "\"type\":{\"type\":\"string\",\"enum\":[\"string\",\"dword\"]},\"data\":{\"type\":\"string\"}},"
+      "\"type\":{\"type\":\"string\",\"enum\":[\"string\",\"dword\",\"delete\"]},\"data\":{\"type\":\"string\"}},"
       "\"required\":[\"key\",\"name\",\"type\",\"data\"]}" },
     { "download_and_run", TIER_CHANGE,
       "Download a Windows program or installer from an https address into the Downloads folder and "
@@ -2092,22 +2094,72 @@ static BOOL protected_key(const char *path)
     return FALSE;
 }
 
+/* Append n bytes of s, breaking runs of more than 46 characters without a
+ * space, after a \ or / where there is one: Wine's task dialog does not wrap
+ * inside a word, and cuts it off at its edge. */
+static void add_wrapped(sb_t *b, const char *s, size_t n)
+{
+    size_t done = 0, run = 0, i, cut;
+
+    for (i = 0; i < n; i++) {
+        if (s[i] == ' ' || s[i] == '\n') {
+            run = i + 1;
+            continue;
+        }
+        if (i - run < 46)
+            continue;
+        for (cut = i; cut > run + 12 && s[cut - 1] != '\\' && s[cut - 1] != '/'; cut--)
+            ;
+        if (cut <= run + 12)
+            cut = i;
+        while (cut > run + 1 && ((unsigned char)s[cut] & 0xC0) == 0x80)    /* not inside a character */
+            cut--;
+        sb_addn(b, s + done, cut - done);
+        sb_addc(b, '\n');
+        done = run = cut;
+    }
+    sb_addn(b, s + done, n - done);
+}
+
+/* Append s for a permission dialog, cut to about max bytes (at a character
+ * boundary) with its full length after it, so that all the dialog's lines
+ * show. */
+static void add_short(sb_t *b, const char *s, size_t max)
+{
+    size_t len = strlen(s), cut = max, chars = 0, i;
+
+    if (len <= max) {
+        add_wrapped(b, s, len);
+        return;
+    }
+    while (cut > 0 && ((unsigned char)s[cut] & 0xC0) == 0x80)
+        cut--;
+    for (i = 0; i < len; i++)
+        if (((unsigned char)s[i] & 0xC0) != 0x80)
+            chars++;
+    add_wrapped(b, s, cut);
+    sb_addf(b, "... (%lu characters in all)", (unsigned long)chars);
+}
+
+/* Set a value, or delete it (type "delete"), which puts it back to "not set":
+ * how Windows marks most defaults. The reply says what the value was before,
+ * so that the change can be undone exactly. */
 static void set_registry_value(sb_t *b, const json *args, approve_fn approve, void *ctx,
                                const tool_def *t, char **label)
 {
     const char *path = arg_str(args, "key"), *name = arg_str(args, "name"), *type = arg_str(args, "type"),
                *data = arg_str(args, "data"), *rest;
     HKEY root = parse_root(path, &rest), key;
-    char detail[1024];
-    sb_t cur;
+    sb_t cur, detail;
     WCHAR *wrest, *wname, *wdata;
     BYTE old[1024];
     DWORD oldsize = sizeof(old) - 2, oldtype, dw;
     LONG rc;
-    BOOL dword = !strcmp(type, "dword");
+    BOOL dword = !strcmp(type, "dword"), del = !strcmp(type, "delete"), ok;
 
-    if (root != HKEY_CURRENT_USER || (!dword && strcmp(type, "string"))) {
-        sb_add(b, "Refused: only values under HKEY_CURRENT_USER, of type string or dword, can be set.");
+    if (root != HKEY_CURRENT_USER || (!dword && !del && strcmp(type, "string"))) {
+        sb_add(b, "Refused: only values under HKEY_CURRENT_USER, of type string or dword, can be set "
+                  "(or deleted, with type delete).");
         *label = utf8_dup("A registry change was refused (outside HKEY_CURRENT_USER)");
         return;
     }
@@ -2122,38 +2174,72 @@ static void set_registry_value(sb_t *b, const json *args, approve_fn approve, vo
     wdata = w_from_utf8(data);
     sb_init(&cur);
     if (!RegOpenKeyExW(HKEY_CURRENT_USER, wrest, 0, KEY_READ, &key)) {
-        if (!RegQueryValueExW(key, wname, NULL, &oldtype, old, &oldsize))
+        rc = RegQueryValueExW(key, wname, NULL, &oldtype, old, &oldsize);
+        if (!rc)
             describe_value(&cur, oldtype, old, oldsize);
+        else if (rc == ERROR_MORE_DATA)
+            sb_addf(&cur, "a value of %lu bytes, too long to show", (unsigned long)oldsize);
         RegCloseKey(key);
     }
-    snprintf(detail, sizeof(detail), "Key: %s\nValue: %s\nNew data: %s%s\nNow: %s", path,
-             *name ? name : "(default)", dword ? "dword " : "", data, cur.len ? cur.s : "not set");
-    sb_free(&cur);
-    if (!approve(t, "Change a registry setting?", detail, ctx)) {
+    if (del && !cur.len) {
+        sb_add(b, "Nothing to do: the value is not set.");
+        *label = utf8_dup("Looked at a registry setting (not set)");
+        goto out;
+    }
+    /* long texts shortened, so that every line of the dialog shows */
+    sb_init(&detail);
+    sb_add(&detail, "Key: ");
+    add_short(&detail, path, 200);
+    sb_add(&detail, "\nValue: ");
+    add_short(&detail, *name ? name : "(default)", 100);
+    if (del) {
+        sb_add(&detail, "\nDelete it, back to not set");
+    } else {
+        sb_add(&detail, dword ? "\nNew data: dword " : "\nNew data: ");
+        add_short(&detail, data, 300);
+    }
+    sb_add(&detail, "\nNow: ");
+    add_short(&detail, cur.len ? cur.s : "not set", 300);
+    ok = approve(t, del ? "Delete a registry setting?" : "Change a registry setting?", detail.s, ctx);
+    sb_free(&detail);
+    if (!ok) {
         sb_add(b, "The person did not allow this change. Nothing was changed.");
         *label = utf8_dup("A registry change was not allowed");
         goto out;
     }
-    rc = RegCreateKeyExW(HKEY_CURRENT_USER, wrest, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL);
-    if (!rc) {
-        if (dword) {
-            dw = strtoul(data, NULL, 0);
-            rc = RegSetValueExW(key, wname, 0, REG_DWORD, (const BYTE *)&dw, sizeof(dw));
-        } else {
-            rc = RegSetValueExW(key, wname, 0, REG_SZ, (const BYTE *)wdata,
-                                (DWORD)((wcslen(wdata) + 1) * sizeof(WCHAR)));
+    if (del) {
+        rc = RegOpenKeyExW(HKEY_CURRENT_USER, wrest, 0, KEY_SET_VALUE, &key);
+        if (!rc) {
+            rc = RegDeleteValueW(key, wname);
+            RegCloseKey(key);
         }
-        RegCloseKey(key);
+    } else {
+        rc = RegCreateKeyExW(HKEY_CURRENT_USER, wrest, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL);
+        if (!rc) {
+            if (dword) {
+                dw = strtoul(data, NULL, 0);
+                rc = RegSetValueExW(key, wname, 0, REG_DWORD, (const BYTE *)&dw, sizeof(dw));
+            } else {
+                rc = RegSetValueExW(key, wname, 0, REG_SZ, (const BYTE *)wdata,
+                                    (DWORD)((wcslen(wdata) + 1) * sizeof(WCHAR)));
+            }
+            RegCloseKey(key);
+        }
     }
     if (rc) {
         sb_addf(b, "The change failed (error %ld).", rc);
         *label = utf8_dup("A registry change failed");
     } else {
-        sb_add(b, "Done: the value was set.");
-        *label = utf8_dup("Changed a registry setting (allowed)");
-        activity_log("set registry value %s : %s = %s", path, name, data);
+        sb_addf(b, "Done: the value was %s. Before, it was %s.", del ? "deleted" : "set",
+                cur.len ? cur.s : "not set (to undo, delete it)");
+        *label = utf8_dup(del ? "Deleted a registry setting (allowed)" : "Changed a registry setting (allowed)");
+        if (del)
+            activity_log("deleted registry value %s : %s", path, name);
+        else
+            activity_log("set registry value %s : %s = %s", path, name, data);
     }
 out:
+    sb_free(&cur);
     free(wrest);
     free(wname);
     free(wdata);

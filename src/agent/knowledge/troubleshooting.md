@@ -152,9 +152,9 @@ the WinCraft Agent.
 ## WinCraft's desktop and taskbar
 
 WinCraft's desktop, taskbar and window manager follow these settings, all
-under `HKEY_CURRENT_USER`, which `set_registry_value` can change. They apply
-at once: WinCraft watches these keys, so nothing needs a restart. Change them
-yourself; the WinCraft Agent is not needed.
+under `HKEY_CURRENT_USER`, which `set_registry_value` can change or delete.
+They apply at once: WinCraft watches these keys, so nothing needs a restart.
+Change them yourself; the WinCraft Agent is not needed.
 
 - Desktop picture: `Control Panel\Desktop`, `Wallpaper` (text: the full
   Windows or Linux path of a BMP, JPG, PNG or GIF picture, such as
@@ -184,6 +184,9 @@ yourself; the WinCraft Agent is not needed.
 - Alt+Tab switches windows: the window in front first, then the others, most
   recently used first and minimized ones last. Tab moves on, Shift+Tab back,
   releasing Alt switches, Esc cancels. There is nothing to set.
+- WinCraft's defaults, to put things back: `Wallpaper` empty, `Background`
+  `11 21 48`, `ActiveWindowTracking` dword 0; every other value above is not
+  set, so delete it. Deleting `AccentColor` brings back WinCraft's own blue.
 
 ## Files and drives
 
