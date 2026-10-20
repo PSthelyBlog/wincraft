@@ -11,7 +11,11 @@ export DISPLAY=:0
 ulimit -Hn 524288
 
 rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
-/usr/lib/Xorg :0 vt1 -nolisten tcp -ac -noreset -logfile /run/log/Xorg.0.log &
+# Only the socket file /tmp/.X11-unix/X0, no abstract socket ("local"): the
+# WinCraft Agent's sandbox shares the network namespace, where abstract
+# sockets live, but not /tmp, so it cannot reach this display. With -ac any
+# program that reaches it may read the screen and send it input.
+/usr/lib/Xorg :0 vt1 -nolisten tcp -nolisten local -ac -noreset -logfile /run/log/Xorg.0.log &
 xpid=$!
 
 n=0

@@ -39,8 +39,11 @@ version, then an overview of this computer.
    WinCraft would: `/usr/lib/wincraft/run-hooks boot` for boot hooks. A boot
    hook runs as root before the desktop exists; a session hook runs as the
    user (`user`, uid 1000) with `DISPLAY=:0` set. The sandbox has no running
-   desktop, so a session hook can only be run there to check that it starts
-   and reads its settings. Each `sandbox_run` starts with an empty `/run`, as
+   desktop and cannot reach the person's, so a session hook can only be run
+   there to check that it starts and reads its settings; a program that opens
+   a window fails there ("Can't open display", or Wine saying no driver could
+   be loaded). Test such a program's other effects instead, and say that the
+   window itself was not seen. Each `sandbox_run` starts with an empty `/run`, as
    a restart does: run a hook and check its effect in the same command. Then
    test the undo: disable it (`/usr/lib/wincraft/priv.d/feature disable
    <id>`) and check, in a new command, that the computer is back to how it
