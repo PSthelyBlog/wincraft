@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.13 — 2026-10-20
+
+The WinCraft Agent can build four settings that WinCraft lacked.
+
+- **Key repeat, screen sleep, pointer speed and left-handed mouse
+  buttons.** These belong to the display server: Windows programs follow
+  it, and Wine keeps the Windows settings for them without applying them.
+  The image now has the display server's own tools for them, `xset` and
+  `xinput` (about 100 KB), so the agent can build a feature that sets them
+  at each login. Turning the feature off undoes it at the next restart.
+  Left-handed buttons made this way work in every Windows program, which
+  Windows' own setting does not do in Wine. Pointer speed has no effect on
+  a virtual machine's tablet pointer.
+- WinCraft Assistant now offers the agent for these four requests, instead
+  of saying WinCraft cannot change them.
+- Everything else is as in 0.7.12.
+
 ## 0.7.12 — 2026-10-20
 
 A fix for the WinCraft Agent.
