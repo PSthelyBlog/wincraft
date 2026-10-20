@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.15 — 2026-10-20
+
+WinCraft Assistant can undo the registry changes it makes.
+
+- **Undoing a change.** When the assistant changes a registry value, it now
+  learns what the value was before, so it can put it back exactly. It can
+  also delete a value, which is how Windows marks most defaults; it asks
+  you first, as for every change. Before, asked to put the taskbar back the
+  way it was, it could not bring back WinCraft's own accent colour, and
+  asked you to choose one instead.
+- Its guide lists the defaults of WinCraft's desktop and taskbar settings,
+  to put them back from a new chat.
+- **The permission dialog always shows all of its lines.** A long value
+  pushed the "Now:" line out of the dialog, and a long key path or word ran
+  past its edge. Long values are now shortened, with their full length, and
+  long words wrap. A value longer than 1 KB was described as not set; it is
+  now described as too long to show.
+- Everything else is as in 0.7.14.
+
 ## 0.7.14 — 2026-10-20
 
 The desktop and taskbar follow Windows' settings, Alt+Tab switches windows,
