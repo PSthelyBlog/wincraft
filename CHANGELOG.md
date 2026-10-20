@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.11 — 2026-10-20
+
+A security fix for the WinCraft Agent's sandbox. Update if you use the agent.
+
+- **The sandbox can no longer reach your screen.** The display server also
+  listened on a socket that the sandbox could reach, without access control,
+  so a command run there could connect to your display: read it, change its
+  layout or keyboard mapping, show windows on it, and, with a tool it
+  downloaded, type and click in your session, the agent's own approval
+  dialogs included. Nothing in WinCraft's own tests did more than read the
+  screen's size, and nothing shows that it happened. The display server now
+  accepts only programs outside the sandbox.
+- The agent's rules say that a window opened in the sandbox cannot be seen,
+  so the agent tests a program's other effects instead.
+- Everything else is as in 0.7.10.
+
 ## 0.7.10 — 2026-10-20
 
 A fix for WinCraft Assistant.

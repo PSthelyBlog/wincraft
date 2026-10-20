@@ -17,18 +17,18 @@ Start menu, and there is nothing else on the disk.
   the missing piece for this computer as a *feature*, as administrator in a
   sandbox, after you approve its plan and its result
 
-**Status: 0.7.10, a working preview.** Read [What it is not](#what-it-is-not)
+**Status: 0.7.11, a working preview.** Read [What it is not](#what-it-is-not)
 before relying on it.
 
 ![The WinCraft desktop: Start menu, Notepad and Minesweeper](docs/screenshot.png)
 
 ## Download
 
-Get `wincraft-0.7.10-x86_64.iso` from the [releases page](../../releases) and
+Get `wincraft-0.7.11-x86_64.iso` from the [releases page](../../releases) and
 check it against the `.sha256` file published next to it:
 
 ```sh
-sha256sum -c wincraft-0.7.10-x86_64.iso.sha256
+sha256sum -c wincraft-0.7.11-x86_64.iso.sha256
 ```
 
 Then boot it in a virtual machine. This is the configuration it was tested
@@ -37,7 +37,7 @@ with (4 GB of RAM, 4 CPUs):
 ```sh
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 4096 -smp 4 \
     -device VGA -device qemu-xhci -device usb-tablet -device usb-kbd \
-    -nic user,model=virtio-net-pci -cdrom wincraft-0.7.10-x86_64.iso
+    -nic user,model=virtio-net-pci -cdrom wincraft-0.7.11-x86_64.iso
 ```
 
 To share the clipboard (text, both ways) with the VM, add QEMU's clipboard
@@ -335,7 +335,7 @@ Closing the agent's window ends the task and its sandbox.
 After [building](#build-it), the same ISO is in `out/`:
 
 ```sh
-./wc run                 # boots out/wincraft-0.7.10-x86_64.iso in a QEMU window
+./wc run                 # boots out/wincraft-0.7.11-x86_64.iso in a QEMU window
 ./wc run --uefi          # same, UEFI firmware
 ./wc run --disk build/vm/disk.qcow2:20G     # with a blank disk to install to
 ./wc run --no-iso --disk build/vm/disk.qcow2   # boot the installed disk
@@ -366,7 +366,7 @@ the firmware setup) it falls back to software emulation, which works but is
 roughly ten times slower.
 
 To put it on a USB stick, write the ISO to the whole device
-(`dd if=out/wincraft-0.7.10-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
+(`dd if=out/wincraft-0.7.11-x86_64.iso of=/dev/sdX bs=4M`, **erasing it**).
 
 ### Boot options
 
