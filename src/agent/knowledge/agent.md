@@ -43,11 +43,18 @@ version, then an overview of this computer.
    there to check that it starts and reads its settings; a program that opens
    a window fails there ("Can't open display", or Wine saying no driver could
    be loaded). Test such a program's other effects instead, and say that the
-   window itself was not seen. Each `sandbox_run` starts with an empty `/run`, as
-   a restart does: run a hook and check its effect in the same command. Then
-   test the undo: disable it (`/usr/lib/wincraft/priv.d/feature disable
-   <id>`) and check, in a new command, that the computer is back to how it
-   was.
+   window itself was not seen. Each `sandbox_run` starts with an empty
+   `/run`, as a restart does: run a hook and check its effect in the same
+   command. What boot hooks put in `/run` is missing until they run, the time
+   zone included: a time zone set by a feature is a link from
+   `/etc/localtime` into `/run`, so the sandbox's clock reads UTC even when
+   the overview below shows another zone. Never convert times by hand: write
+   features that read the local time. To test a time of day, run
+   `/usr/lib/wincraft/run-hooks boot` first in the same command (`date` then
+   shows the computer's local time), or set `TZ` for the test
+   (`TZ=Europe/Paris date`). Then test the undo: disable it
+   (`/usr/lib/wincraft/priv.d/feature disable <id>`) and check, in a new
+   command, that the computer is back to how it was.
 5. **Finish** with `finish_feature`: the person sees the feature's files and
    anything else the sandbox changed, and decides whether to add it. If they
    accept, it is added and enabled, and takes effect from the next start. Then
