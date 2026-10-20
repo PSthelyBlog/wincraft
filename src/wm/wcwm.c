@@ -20,8 +20,9 @@
  *   usage: wcwm [taskbar-height]       (default: $WINCRAFT_TASKBAR or 44)
  *
  * The shell passes on the preferences that concern it in
- * $XDG_RUNTIME_DIR/wcwm.conf ("key=value" lines: taskbar, autohide,
- * focus_follows_mouse, focus_delay), read again whenever it changes.
+ * $XDG_RUNTIME_DIR/wcwm.conf ("key=value" lines: taskbar, position (top or
+ * bottom), autohide, focus_follows_mouse, focus_delay), read again whenever it
+ * changes.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -81,8 +82,10 @@ static Window taskbar_win, desktop_win;
 
 static int adopt_shell_window(Window win);
 static Time last_time = CurrentTime;
-static int taskbar_height = 44;      /* what the work area leaves at the bottom */
+static int taskbar_height = 44;      /* what the work area leaves for the taskbar */
 static int bar_height = 44;          /* the taskbar's own height */
+static int taskbar_top;              /* the taskbar at the top edge, not the bottom */
+#define AREA_Y  (taskbar_top ? taskbar_height : 0)     /* where the work area starts */
 
 /* Preferences from the shell (wcwm.conf). */
 static int autohide, focus_follows_mouse;
@@ -144,7 +147,8 @@ static int get_cardinal(Window win, Atom prop, long *value)
     return ok;
 }
 
-/* Is this one of the shell's own windows, e.g. its "Taskbar"? */
+/* Is this one of the shell's own windows, e.g. its "Taskbar" (any of them
+ * for a NULL title)? */
 static int is_shell_window(Window win, const char *title)
 {
     XClassHint hint = { NULL, NULL };
@@ -152,9 +156,8 @@ static int is_shell_window(Window win, const char *title)
     int match = 0;
 
     if (XGetClassHint(dpy, win, &hint)) {
-        if (hint.res_name && !strcmp(hint.res_name, SHELL_CLASS) &&
-            XFetchName(dpy, win, &name) && name)
-            match = !strcmp(name, title);
+        if (hint.res_name && !strcmp(hint.res_name, SHELL_CLASS))
+            match = !title || (XFetchName(dpy, win, &name) && name && !strcmp(name, title));
         if (hint.res_name) XFree(hint.res_name);
         if (hint.res_class) XFree(hint.res_class);
         if (name) XFree(name);
@@ -178,7 +181,7 @@ static Time server_time(void)
 static void update_workarea(void)
 {
     int w = screen_w, h = screen_h;
-    long area[4] = { 0, 0, w, h - taskbar_height }, size[2] = { w, h }, origin[2] = { 0, 0 };
+    long area[4] = { 0, AREA_Y, w, h - taskbar_height }, size[2] = { w, h }, origin[2] = { 0, 0 };
 
     set_cardinals(root, atoms[NET_WORKAREA], XA_CARDINAL, area, 4);
     set_cardinals(root, atoms[NET_DESKTOP_GEOMETRY], XA_CARDINAL, size, 2);
@@ -445,7 +448,7 @@ static void apply_state_geometry(struct client *c)
             c->saved_h = wa.height;
             c->has_saved = 1;
         }
-        XMoveResizeWindow(dpy, c->win, 0, 0, screen_w,
+        XMoveResizeWindow(dpy, c->win, 0, c->fullscreen ? 0 : AREA_Y, screen_w,
                           c->fullscreen ? screen_h : screen_h - taskbar_height);
     } else if (c->has_saved) {
         c->has_saved = 0;
@@ -543,7 +546,8 @@ static int adopt_shell_window(Window win)
 
 /*
  * Notification-area ("tray") icons live in a small window owned by the
- * runtime's explorer process. Dock it in the corner above the clock.
+ * runtime's explorer process. Dock it in the corner by the clock: above it,
+ * or below it when the taskbar is at the top.
  */
 static int is_tray_window(Window win)
 {
@@ -564,7 +568,8 @@ static int is_tray_window(Window win)
 static void dock_tray(struct client *c, int width, int height)
 {
     XMoveResizeWindow(dpy, c->win, screen_w - width - 6,
-                      screen_h - taskbar_height - height - 6, width, height);
+                      taskbar_top ? taskbar_height + 6 : screen_h - taskbar_height - height - 6,
+                      width, height);
 }
 
 /*
@@ -584,16 +589,19 @@ static void place_new_window(struct client *c)
         dock_tray(c, wa.width, wa.height);
         return;
     }
-    if (c->transient_for || c->fullscreen || c->maximized)
+    if (c->transient_for || c->fullscreen || c->maximized || is_shell_window(c->win, NULL))
         return;
-    if (wa.x != 0 || wa.y != 0 || wa.width >= screen_w || wa.height >= screen_h - taskbar_height)
+    /* the corner of the screen or of the work area */
+    if (wa.x != 0 || (wa.y != 0 && wa.y != AREA_Y) || wa.width >= screen_w ||
+        wa.height >= screen_h - taskbar_height)
         return;
-    x = y = 40 + 30 * (slot++ % 8);
+    x = 40 + 30 * (slot++ % 8);
+    y = AREA_Y + x;
     if (x + wa.width > screen_w)
         x = screen_w - wa.width;
-    if (y + wa.height > screen_h - taskbar_height)
-        y = screen_h - taskbar_height - wa.height;
-    XMoveWindow(dpy, c->win, x < 0 ? 0 : x, y < 0 ? 0 : y);
+    if (y + wa.height > AREA_Y + screen_h - taskbar_height)
+        y = AREA_Y + screen_h - taskbar_height - wa.height;
+    XMoveWindow(dpy, c->win, x < 0 ? 0 : x, y < AREA_Y ? AREA_Y : y);
 }
 
 static void on_map_request(XMapRequestEvent *e)
@@ -792,7 +800,7 @@ static void check_prefs(void)
     struct stat st;
     char line[128];
     FILE *f;
-    int new_autohide = 0, new_ffm = 0, new_bar = bar_height, height;
+    int new_autohide = 0, new_ffm = 0, new_bar = bar_height, new_top = 0, height;
     long new_delay = 0;
     struct client *c;
 
@@ -811,6 +819,7 @@ static void check_prefs(void)
         return;
     while (fgets(line, sizeof(line), f)) {
         if (!strncmp(line, "taskbar=", 8)) new_bar = atoi(line + 8);
+        else if (!strncmp(line, "position=", 9)) new_top = !strncmp(line + 9, "top", 3);
         else if (!strncmp(line, "autohide=", 9)) new_autohide = atoi(line + 9);
         else if (!strncmp(line, "focus_follows_mouse=", 20)) new_ffm = atoi(line + 20);
         else if (!strncmp(line, "focus_delay=", 12)) new_delay = atol(line + 12);
@@ -823,12 +832,17 @@ static void check_prefs(void)
     focus_delay = new_delay < 0 ? 0 : new_delay > 10000 ? 10000 : new_delay;
     /* Hidden, the taskbar leaves a 2-pixel strip; maximised windows get the rest. */
     height = autohide ? 2 : bar_height;
-    if (height != taskbar_height) {
+    if (height != taskbar_height || new_top != taskbar_top) {
+        XWindowAttributes wa;
+
         taskbar_height = height;
+        taskbar_top = new_top;
         update_workarea();
         for (c = clients; c; c = c->next)
             if (c->maximized)
                 apply_state_geometry(c);
+            else if (c->tray && XGetWindowAttributes(dpy, c->win, &wa))
+                dock_tray(c, wa.width, wa.height);
     }
     if (new_ffm != focus_follows_mouse) {
         focus_follows_mouse = new_ffm;

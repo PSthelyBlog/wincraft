@@ -140,8 +140,9 @@ the WinCraft Agent.
     changes, so changes made there are lost then.
 - Drawn or handled by WinCraft: the desktop, the taskbar, the Start menu and
   window focus. They follow only the settings in "WinCraft's desktop and
-  taskbar" below; Explorer's other settings (taskbar position, desktop icon
-  size or spacing, combining taskbar buttons) do nothing here yet.
+  taskbar" below; Explorer's other settings (its taskbar position in
+  `StuckRects3`, desktop icon size or spacing, combining taskbar buttons) do
+  nothing here yet.
 - Belonging to the display server, which Windows programs follow: key
   repeat, screen blanking and sleep, pointer speed, and left-handed mouse
   buttons. WinCraft has no setting for them, but the WinCraft Agent can build
@@ -173,9 +174,14 @@ Change them yourself; the WinCraft Agent is not needed.
 - Open desktop icons with one click: `Software\WinCraft\Shell`,
   `SingleClickOpen` (dword 1). WinCraft's own value: Windows keeps this
   setting in a form the registry tool cannot write.
-- Hide the taskbar until the pointer reaches the bottom edge:
+- Hide the taskbar until the pointer reaches the screen's edge:
   `Software\WinCraft\Shell`, `TaskbarAutoHide` (dword 1). WinCraft's own
   value, for the same reason.
+- The taskbar at the top of the screen: `Software\WinCraft\Shell`,
+  `TaskbarPosition` (dword 1; 3, or not set, for the bottom: Windows'
+  numbers for the edges). The Start menu opens below it and maximized windows
+  fill the rest. WinCraft's own value, for the same reason. The left and
+  right edges are not supported yet.
 - Focus follows the mouse: `Control Panel\Mouse`, `ActiveWindowTracking`
   (dword 1), and how long the pointer must rest on a window first:
   `Control Panel\Desktop`, `ActiveWndTrkTimeout` (dword, milliseconds; 0 at

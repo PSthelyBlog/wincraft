@@ -93,6 +93,13 @@ static HWND g_desktop, g_bar, g_menu;
 static HFONT g_font, g_font_bold, g_font_small, g_font_large;
 static int g_sw, g_sh;
 static int g_bar_h = 44;     /* WINCRAFT_TASKBAR: must match the session's work area */
+static BOOL g_bar_top;       /* the taskbar at the top (WinCraft\Shell: TaskbarPosition) */
+/* the taskbar's place, and the part of the screen it leaves free */
+#define BAR_Y           (g_bar_top ? 0 : g_sh - BAR_H)
+#define AREA_TOP        (g_bar_top ? BAR_H : 0)
+#define AREA_BOTTOM     (g_bar_top ? g_sh : g_sh - BAR_H)
+#define BAR_INNER_Y     (g_bar_top ? BAR_H : g_sh - BAR_H)      /* where it meets the desktop */
+#define BAR_POPUP_ALIGN (g_bar_top ? TPM_TOPALIGN : TPM_BOTTOMALIGN)
 static HHOOK g_kbd_hook;
 /* "Install WinCraft OS" is for a session started from the installation
    medium; on an installed system its shortcuts are not shown. */
@@ -328,8 +335,8 @@ static LRESULT CALLBACK run_dialog_hook(int code, WPARAM wp, LPARAM lp)
 
         placed_tid = GetCurrentThreadId();
         if (GetWindowRect(hwnd, &rc))
-            SetWindowPos(hwnd, NULL, 8, g_sh - BAR_H - (rc.bottom - rc.top) - 8, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(hwnd, NULL, 8, g_bar_top ? BAR_INNER_Y + 8 : BAR_INNER_Y - (rc.bottom - rc.top) - 8,
+                         0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
     return CallNextHookEx(NULL, code, wp, lp);
 }
@@ -492,6 +499,7 @@ static struct prefs {
     BOOL seconds;               /* Explorer\Advanced: ShowSecondsInSystemClock */
     BOOL single_click;          /* WinCraft\Shell: SingleClickOpen */
     BOOL autohide;              /* WinCraft\Shell: TaskbarAutoHide */
+    BOOL bar_top;               /* WinCraft\Shell: TaskbarPosition 1 (Windows' number for the top edge) */
     BOOL focus_follows_mouse;   /* Control Panel\Mouse: ActiveWindowTracking */
     DWORD focus_delay;          /* Control Panel\Desktop: ActiveWndTrkTimeout, ms */
 } g_prefs;
@@ -563,6 +571,7 @@ static void read_prefs(struct prefs *p)
     p->seconds = reg_number(KEY_ADVANCED, L"ShowSecondsInSystemClock", 0, NULL) != 0;
     p->single_click = reg_number(KEY_WINCRAFT, L"SingleClickOpen", 0, NULL) != 0;
     p->autohide = reg_number(KEY_WINCRAFT, L"TaskbarAutoHide", 0, NULL) != 0;
+    p->bar_top = reg_number(KEY_WINCRAFT, L"TaskbarPosition", 3, NULL) == 1;      /* 3: the bottom */
     p->focus_follows_mouse = reg_number(L"Control Panel\\Mouse", L"ActiveWindowTracking", 0, NULL) != 0;
     p->focus_delay = reg_number(KEY_DESKTOP, L"ActiveWndTrkTimeout", 0, NULL);
 }
@@ -596,8 +605,10 @@ static void write_wm_prefs(void)
     _snwprintf(path, ARRAYSIZE(path), L"\\\\?\\unix%ls\\wcwm.conf", dir);
     _snwprintf(tmp, ARRAYSIZE(tmp), L"\\\\?\\unix%ls\\wcwm.conf.new", dir);
     path[ARRAYSIZE(path) - 1] = tmp[ARRAYSIZE(tmp) - 1] = 0;
-    n = snprintf(text, sizeof(text), "taskbar=%d\nautohide=%d\nfocus_follows_mouse=%d\nfocus_delay=%lu\n",
-                 g_bar_h, g_prefs.autohide, g_prefs.focus_follows_mouse, (unsigned long)g_prefs.focus_delay);
+    n = snprintf(text, sizeof(text),
+                 "taskbar=%d\nposition=%s\nautohide=%d\nfocus_follows_mouse=%d\nfocus_delay=%lu\n",
+                 g_bar_h, g_bar_top ? "top" : "bottom", g_prefs.autohide, g_prefs.focus_follows_mouse,
+                 (unsigned long)g_prefs.focus_delay);
     h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE)
         return;
@@ -776,7 +787,7 @@ static void make_wallpaper(void)
 
     /* A large, faint logo on the right-hand side. */
     r = g_sh * 30 / 100;
-    logo_faces(g_sw * 70 / 100, (g_sh - BAR_H) / 2, r, top, left, right);
+    logo_faces(g_sw * 70 / 100, (AREA_TOP + AREA_BOTTOM) / 2, r, top, left, right);
     SetRect(&rc, 0, 0, g_sw, g_sh);
     for (i = 0; i < 3; i++) {
         HRGN rgn = CreatePolygonRgn(faces[i], 4, WINDING);
@@ -787,7 +798,7 @@ static void make_wallpaper(void)
         DeleteObject(rgn);
     }
 
-    SetRect(&rc, 0, g_sh - BAR_H - 34, g_sw - 16, g_sh - BAR_H - 12);
+    SetRect(&rc, 0, AREA_BOTTOM - 34, g_sw - 16, AREA_BOTTOM - 12);
     text(dc, L"WinCraft OS " WC_VERSION, &rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
          g_font_small, RGB(170, 196, 224));
 
@@ -861,7 +872,7 @@ static DWORD scan_desktop(struct icon_item **out, int *count)
 
 static void load_icons(void)
 {
-    int i, x = 12, y = 12;
+    int i, x = 12, y = AREA_TOP + 12;
 
     for (i = 0; i < g_nicons; i++)
         if (g_icons[i].icon)
@@ -879,8 +890,8 @@ static void load_icons(void)
         g_icons[i].icon = file_icon(g_icons[i].path, 48);
         SetRect(&g_icons[i].rc, x, y, x + ICON_CELL_W, y + ICON_CELL_H);
         y += ICON_CELL_H + 6;
-        if (y + ICON_CELL_H > g_sh - BAR_H) {
-            y = 12;
+        if (y + ICON_CELL_H > AREA_BOTTOM) {
+            y = AREA_TOP + 12;
             x += ICON_CELL_W + 6;
         }
     }
@@ -1410,7 +1421,7 @@ static void show_menu(void)
     load_programs();
     g_menu_btn = -1;
     g_menu_h = min(620, g_sh - BAR_H - 16);
-    SetWindowPos(g_menu, HWND_TOPMOST, 0, g_sh - BAR_H - g_menu_h, MENU_W, g_menu_h,
+    SetWindowPos(g_menu, HWND_TOPMOST, 0, g_bar_top ? BAR_INNER_Y : BAR_INNER_Y - g_menu_h, MENU_W, g_menu_h,
                  SWP_SHOWWINDOW);
     SetForegroundWindow(g_menu);
     SetFocus(g_menu);
@@ -1740,14 +1751,16 @@ static void paint_bar(HWND hwnd)
     SYSTEMTIME now;
     RECT rc;
     int i;
+    /* the edge line faces the desktop, the active window's mark the screen's edge */
+    int edge = g_bar_top ? BAR_H - 1 : 0, body = g_bar_top ? 0 : 1, mark = g_bar_top ? 0 : BAR_H - 3;
 
     SetRect(&rc, 0, 0, g_sw, BAR_H);
     fill(mem, &rc, C_BAR);
-    fill_xywh(mem, 0, 0, g_sw, 1, C_BAR_EDGE);
+    fill_xywh(mem, 0, edge, g_sw, 1, C_BAR_EDGE);
 
     /* Start button */
-    fill_xywh(mem, 0, 1, START_W, BAR_H - 1, start_bg);
-    draw_logo(mem, (START_W - 26) / 2, (BAR_H - 26) / 2 + 1, 26, start_bg);
+    fill_xywh(mem, 0, body, START_W, BAR_H - 1, start_bg);
+    draw_logo(mem, (START_W - 26) / 2, (BAR_H - 26) / 2 + body, 26, start_bg);
 
     /* running windows */
     for (i = 0; i < g_ntasks; i++) {
@@ -1756,12 +1769,13 @@ static void paint_bar(HWND hwnd)
         RECT tr = t->rc;
         int x = tr.left + 10;
 
-        tr.top = 1;
+        tr.top = body;
+        tr.bottom = body + BAR_H - 1;
         if (active)
             fill(mem, &tr, C_ACTIVE);
         else if (i == g_bar_hot)
             fill(mem, &tr, C_HOT);
-        fill_xywh(mem, tr.left + (active ? 0 : 8), BAR_H - 3,
+        fill_xywh(mem, tr.left + (active ? 0 : 8), mark,
                   tr.right - tr.left - (active ? 0 : 16), 3, active ? C_ACCENT : C_BAR_EDGE);
         if (t->icon) {
             DrawIconEx(mem, x, (BAR_H - 16) / 2, t->icon, 16, 16, 0, NULL, DI_NORMAL);
@@ -1784,9 +1798,9 @@ static void paint_bar(HWND hwnd)
     text(mem, buf, &rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER, g_font_small, C_DIM);
 
     /* show-desktop strip */
-    fill_xywh(mem, g_sw - PEEK_W, 1, 1, BAR_H - 1, C_BAR_EDGE);
+    fill_xywh(mem, g_sw - PEEK_W, body, 1, BAR_H - 1, C_BAR_EDGE);
     if (g_bar_hot == -3)
-        fill_xywh(mem, g_sw - PEEK_W + 1, 1, PEEK_W - 1, BAR_H - 1, C_HOT);
+        fill_xywh(mem, g_sw - PEEK_W + 1, body, PEEK_W - 1, BAR_H - 1, C_HOT);
 
     BitBlt(dc, 0, 0, g_sw, BAR_H, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
@@ -1846,7 +1860,7 @@ static void task_menu(HWND bar, HWND hwnd, int x)
     AppendMenuW(menu, zoomed ? MF_GRAYED : MF_STRING, IDM_MAXIMIZE, L"Maximize");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_CLOSE, L"Close");
-    switch (popup_menu(menu, TPM_BOTTOMALIGN, x, g_sh - BAR_H)) {
+    switch (popup_menu(menu, BAR_POPUP_ALIGN, x, BAR_INNER_Y)) {
     case IDM_RESTORE:  ShowWindowAsync(hwnd, SW_RESTORE); SetForegroundWindow(hwnd); break;
     case IDM_MINIMIZE: PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0); break;
     case IDM_MAXIMIZE: PostMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0); SetForegroundWindow(hwnd); break;
@@ -1862,7 +1876,7 @@ static void start_menu_context(HWND bar)
     AppendMenuW(menu, MF_STRING, IDM_RUN, L"Run...");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"Control Panel");
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"About WinCraft OS");
-    switch (popup_menu(menu, TPM_BOTTOMALIGN, 0, g_sh - BAR_H)) {
+    switch (popup_menu(menu, BAR_POPUP_ALIGN, 0, BAR_INNER_Y)) {
     case IDM_RUN:      run_dialog(); break;
     case IDM_SETTINGS: system_tool(L"control.exe", NULL); break;
     case IDM_ABOUT:    about(); break;
@@ -1871,7 +1885,7 @@ static void start_menu_context(HWND bar)
 }
 
 /* ---- auto-hide (WinCraft\Shell: TaskbarAutoHide): a 2-pixel strip stays
- * at the bottom edge, and the pointer reaching it brings the taskbar back */
+ * at the screen's edge, and the pointer reaching it brings the taskbar back */
 #define AUTOHIDE_STRIP  2
 static BOOL g_bar_hidden;
 
@@ -1879,8 +1893,9 @@ static void place_bar(BOOL hidden)
 {
     g_bar_hidden = hidden;
     if (g_bar)
-        SetWindowPos(g_bar, HWND_TOPMOST, 0, hidden ? g_sh - AUTOHIDE_STRIP : g_sh - BAR_H, g_sw, BAR_H,
-                     SWP_NOACTIVATE);
+        SetWindowPos(g_bar, HWND_TOPMOST, 0,
+                     !hidden ? BAR_Y : g_bar_top ? AUTOHIDE_STRIP - BAR_H : g_sh - AUTOHIDE_STRIP,
+                     g_sw, BAR_H, SWP_NOACTIVATE);
 }
 
 static void autohide_later(void)
@@ -1898,13 +1913,22 @@ static void apply_prefs(void)
     if (!memcmp(&old, &g_prefs, sizeof(old)))
         return;
     set_palette();
+    g_bar_top = g_prefs.bar_top;
+    if (old.bar_top != g_prefs.bar_top) {
+        /* the bar moves to the other edge: the menu, the icons and the
+         * wallpaper's logo move with it */
+        hide_menu();
+        place_bar(FALSE);
+        load_icons();
+    }
     if (lstrcmpW(old.wallpaper, g_prefs.wallpaper) || old.style != g_prefs.style || old.tile != g_prefs.tile ||
-        old.has_background != g_prefs.has_background || old.background != g_prefs.background) {
+        old.has_background != g_prefs.has_background || old.background != g_prefs.background ||
+        old.bar_top != g_prefs.bar_top) {
         make_wallpaper();
         InvalidateRect(g_desktop, NULL, FALSE);
     }
     SetTimer(g_bar, TIMER_CLOCK, g_prefs.seconds ? 1000 : 5000, NULL);
-    if (old.autohide != g_prefs.autohide) {
+    if (old.autohide != g_prefs.autohide || old.bar_top != g_prefs.bar_top) {
         KillTimer(g_bar, TIMER_AUTOHIDE);
         if (g_prefs.autohide)
             autohide_later();
@@ -1912,7 +1936,7 @@ static void apply_prefs(void)
             place_bar(FALSE);
     }
     if (old.autohide != g_prefs.autohide || old.focus_follows_mouse != g_prefs.focus_follows_mouse ||
-        old.focus_delay != g_prefs.focus_delay)
+        old.focus_delay != g_prefs.focus_delay || old.bar_top != g_prefs.bar_top)
         write_wm_prefs();
     InvalidateRect(g_bar, NULL, FALSE);
     InvalidateRect(g_menu, NULL, FALSE);
@@ -2065,7 +2089,8 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
             KillTimer(hwnd, TIMER_AUTOHIDE);
             GetCursorPos(&pt);
-            if (g_prefs.autohide && !IsWindowVisible(g_menu) && pt.y < g_sh - BAR_H)
+            if (g_prefs.autohide && !IsWindowVisible(g_menu) &&
+                (g_bar_top ? pt.y >= BAR_INNER_Y : pt.y < BAR_INNER_Y))
                 place_bar(TRUE);
         } else if (wp == TIMER_PREFS) {
             KillTimer(hwnd, TIMER_PREFS);
@@ -3214,6 +3239,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     RegisterClassExW(&wc);
 
     read_prefs(&g_prefs);
+    g_bar_top = g_prefs.bar_top;
     set_palette();
     apply_system_metrics();
     make_wallpaper();
@@ -3224,7 +3250,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
                                 NULL, NULL, inst, NULL);
     g_bar = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                             L"WinCraftTaskbar", L"Taskbar", WS_POPUP,
-                            0, g_sh - BAR_H, g_sw, BAR_H, NULL, NULL, inst, NULL);
+                            0, BAR_Y, g_sw, BAR_H, NULL, NULL, inst, NULL);
     g_menu = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"WinCraftStartMenu", L"Start",
                              WS_POPUP, 0, 0, MENU_W, 400, NULL, NULL, inst, NULL);
     g_switcher = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"WinCraftSwitcher",

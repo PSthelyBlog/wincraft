@@ -91,11 +91,11 @@ Verified in QEMU, booting the ISO, unless noted:
   opens in place; search still finds what is inside.
 - The desktop and taskbar follow Windows' own settings for a desktop picture
   or colour, a light taskbar, the accent colour, seconds on the clock and
-  focus following the mouse, and two of WinCraft's own (one-click icons, a
-  taskbar that hides itself), all in the registry and applied at once. The
-  assistant changes them for you; the list, with the keys, is in its guide
-  (`src/agent/knowledge/troubleshooting.md`, "WinCraft's desktop and
-  taskbar").
+  focus following the mouse, and three of WinCraft's own (one-click icons, a
+  taskbar that hides itself, the taskbar at the top), all in the registry
+  and applied at once. The assistant changes them for you; the list, with
+  the keys, is in its guide (`src/agent/knowledge/troubleshooting.md`,
+  "WinCraft's desktop and taskbar").
 - Networking: wired, DHCP, DNS; HTTPS with certificate validation.
 - **The clock follows internet time**: the `time` service runs `ntpd`
   against four `pool.ntp.org` servers once the network is up, and corrects
