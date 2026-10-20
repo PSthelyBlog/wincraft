@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.10 — 2026-10-20
+
+A fix for WinCraft Assistant.
+
+- **The assistant no longer changes Windows settings that do nothing in
+  WinCraft.** Wine keeps many of them in the registry without applying them:
+  asked to swap the mouse buttons, the assistant set `SwapMouseButtons`,
+  which Wine reports but never applies to the clicks; asked for a wider text
+  cursor, it set `CaretWidth`, which Wine's text boxes ignore. Its guide now
+  lists these settings, found by going through every Windows setting Wine
+  keeps: pointer speed, trails and size, the submenu delay, focus following
+  the mouse, most visual effects, the screen saver and power times, and
+  others. It also lists the values Wine writes for itself, and what WinCraft
+  draws on its own: the desktop, the taskbar and the Start menu. For these
+  the assistant now says that WinCraft cannot change them yet.
+- Everything else is as in 0.7.9.
+
 ## 0.7.9 — 2026-10-19
 
 A fix for WinCraft Assistant.
