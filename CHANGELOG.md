@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.14 — 2026-10-20
+
+The desktop and taskbar follow Windows' settings, Alt+Tab switches windows,
+and the WinCraft Agent can see what a feature shows.
+
+- **Desktop and taskbar settings.** WinCraft's desktop, taskbar and window
+  manager now follow Windows' own settings for them, so the assistant,
+  Regedit and programs can change them: a desktop picture (fill, fit,
+  stretch, centre or tile) or a plain colour, a light taskbar and Start
+  menu, the accent colour, seconds on the clock, and focus following the
+  mouse, with its delay. Two are WinCraft's own, because Windows keeps them
+  in a form the registry tool cannot write: opening desktop icons with one
+  click, and a taskbar that hides itself until the pointer reaches the
+  bottom edge. All apply at once, with no restart. WinCraft Assistant knows
+  them and changes them itself; the agent is not needed.
+- **Alt+Tab** switches windows: the window in front first, then the others,
+  minimized ones last. Tab moves on, Shift+Tab back, releasing Alt switches,
+  Esc cancels.
+- **The WinCraft Agent has a private screen.** Its sandbox can start a
+  virtual screen of its own, run a feature's programs there as you, and
+  read back the windows they show, with their text and buttons. Nothing
+  outside the sandbox can reach that screen, and your own screen stays out
+  of the sandbox's reach. The image gains the virtual screen server, Xvfb
+  (about 2 MB).
+- Everything else is as in 0.7.13.
+
 ## 0.7.13 — 2026-10-20
 
 The WinCraft Agent can build four settings that WinCraft lacked.
