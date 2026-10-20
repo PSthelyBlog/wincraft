@@ -88,8 +88,8 @@
   (X), not by Windows settings. Wine keeps `KeyboardDelay` and `KeyboardSpeed`
   under `HKEY_CURRENT_USER\Control Panel\Keyboard`, but does not use them
   with WinCraft's display server, so changing them does nothing. WinCraft has
-  no setting for key repeat yet, and no program that changes it while the
-  display server runs.
+  no setting for key repeat, but the WinCraft Agent can build a feature that
+  sets it at each login with the display server's own tool (`xset`).
 - The clock shows UTC; there is no time zone setting yet.
 
 ## Windows settings that do nothing here
@@ -97,16 +97,18 @@
 Wine keeps many Windows settings in the registry without applying them, and
 WinCraft draws parts of the screen itself. Such a value can be read and
 written like any other, so finding it proves nothing. When a request comes
-down to one of these, say that WinCraft cannot change it yet, instead of
-writing the value.
+down to one of these, do not write the value: say that WinCraft cannot change
+it yet, or, for the display server's settings at the end of this list, offer
+the WinCraft Agent.
 
 - Kept by Wine but not applied by Wine's own windows and controls (a program
   that reads the value itself may still follow it):
   - under `HKEY_CURRENT_USER\Control Panel\Mouse`: `MouseSensitivity`,
     `MouseSpeed`, `MouseThreshold1` and `MouseThreshold2` (pointer speed and
-    acceleration belong to the display server), `MouseTrails`,
+    acceleration belong to the display server, below), `MouseTrails`,
     `SnapToDefaultButton`, `ActiveWindowTracking`, and `SwapMouseButtons`
-    (Wine reports the buttons as swapped but does not swap the clicks);
+    (Wine reports the buttons as swapped but does not swap the clicks; the
+    display server can, below);
   - under `Control Panel\Desktop`: `MenuShowDelay`, `CaretWidth` (Wine's text
     boxes always draw a 1-pixel cursor), `FocusBorderWidth`,
     `FocusBorderHeight`, `ForegroundLockTimeout`, `ForegroundFlashCount`,
@@ -138,9 +140,13 @@ writing the value.
 - Drawn or handled by WinCraft, which reads no Windows setting for them: the
   desktop (background, wallpaper, icons), the taskbar and the Start menu (none
   of Explorer's settings apply), and window focus and arrangement (WinCraft's
-  window manager: click to focus). Screen blanking, key repeat and pointer
-  movement belong to the display server. WinCraft has no setting for any of
-  these yet.
+  window manager: click to focus). WinCraft has no setting for these yet.
+- Belonging to the display server, which Windows programs follow: key
+  repeat, screen blanking and sleep, pointer speed, and left-handed mouse
+  buttons. WinCraft has no setting for them, but the WinCraft Agent can build
+  a feature that sets them at each login with the display server's own tools
+  (`xset`, `xinput`); turning the feature off undoes it after a restart. The
+  pointer's speed has no effect on a virtual machine's tablet pointer.
 
 ## Files and drives
 

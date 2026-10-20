@@ -22,6 +22,10 @@ ttf-liberation
 xorg-server
 xf86-input-libinput
 xorg-xrandr
+# the display server's settings, for features: key repeat and screen sleep
+# (xset), pointer speed and left-handed buttons (xinput)
+xorg-xset
+xorg-xinput
 mesa
 
 # -- device management (udev only; systemd itself is pruned)

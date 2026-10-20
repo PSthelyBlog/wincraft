@@ -84,9 +84,22 @@ version, then an overview of this computer.
   seconds; one that fails is skipped. Do not loop or wait for the network in
   a boot hook.
 - The sandbox has the system's programs (BusyBox, util-linux, Wine, Xorg's
-  tools such as `setxkbmap`), the network, and no compiler or package
-  manager. It has no disks, and an empty `/home`: the person's files are not
-  yours to read.
+  tools `setxkbmap`, `xrandr`, `xset` and `xinput`), the network, and no
+  compiler or package manager. It has no disks, and an empty `/home`: the
+  person's files are not yours to read.
+- Settings of the display server, which Windows programs follow but Wine's
+  own settings for them do not change, go in a session hook, applied at each
+  login: key repeat (`xset r rate DELAY RATE`, in milliseconds and repeats
+  per second), screen blanking and sleep (`xset s SECONDS`,
+  `xset dpms 0 0 SECONDS`), and for each pointer device
+  (`xinput list --id-only`) its speed
+  (`xinput set-prop ID "libinput Accel Speed" X`, X from -1 to 1) or
+  left-handed buttons (`xinput set-prop ID "libinput Left Handed Enabled" 1`);
+  a device without the property refuses it, which is harmless. The display
+  server forgets all of them at every restart, so disabling the feature
+  undoes them. The sandbox has no display: check there that the hook runs
+  the right commands, with stand-ins for `xset` and `xinput` placed first in
+  `PATH` that log their arguments, and say the effect itself was not seen.
 - The shell is BusyBox's, and it runs its own built-in commands before
   searching `PATH`: plain `setpriv`, `unshare`, `mount`, `date`, `sleep`,
   `timeout` and others are BusyBox's versions, with fewer options. Call
