@@ -14,8 +14,9 @@
  *   - the work area: maximised windows stop above the taskbar
  *   - moving and sizing with the mouse once the program hands it over, and
  *     snapping: a window dragged to the left or right edge of the screen
- *     fills that half of the work area, to the top edge it is maximised;
- *     Windows+Left/Right/Up/Down do the same from the keyboard
+ *     fills that half of the work area, to a corner that quarter, to the
+ *     top edge it is maximised; Windows+Left/Right/Up/Down do the same from
+ *     the keyboard
  *
  * It speaks just enough ICCCM/EWMH for the Windows runtime to run in its
  * normal "managed" mode. The WinCraft shell's own desktop and taskbar are
@@ -60,7 +61,7 @@ struct client {
     int has_saved;              /* geometry to return to when restored */
     int saved_x, saved_y, saved_w, saved_h;
     int functions;              /* what the program allows: MWM_FUNC_* */
-    int snapped;                /* SNAP_LEFT or SNAP_RIGHT: it fills that half of the work area */
+    int snapped;                /* SNAP_*: the half or quarter of the work area it fills */
     int snap_x, snap_y, snap_w, snap_h;     /* where it was before */
 };
 
@@ -73,7 +74,11 @@ struct client {
 #define MWM_FUNC_MINIMIZE   8
 #define MWM_FUNC_MAXIMIZE   16
 
-enum { SNAP_NONE, SNAP_LEFT, SNAP_RIGHT, SNAP_MAXIMIZE };
+enum {
+    SNAP_NONE, SNAP_LEFT, SNAP_RIGHT,
+    SNAP_TOPLEFT, SNAP_TOPRIGHT, SNAP_BOTTOMLEFT, SNAP_BOTTOMRIGHT,
+    SNAP_MAXIMIZE
+};
 
 enum {
     WM_PROTOCOLS, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE,
@@ -542,18 +547,46 @@ static void restore(struct client *c)
     write_net_state(c);
 }
 
-/* The half of the work area a snapped window fills. */
-static void half_area(int side, int *x, int *y, int *w, int *h)
+/* The side of the screen a half or quarter is on, and the quarter of a side. */
+static int snap_side(int zone)
 {
-    int left = screen_w / 2;
-
-    *x = side == SNAP_LEFT ? 0 : left;
-    *w = side == SNAP_LEFT ? left : screen_w - left;
-    *y = AREA_Y;
-    *h = screen_h - taskbar_height;
+    return zone == SNAP_RIGHT || zone == SNAP_TOPRIGHT || zone == SNAP_BOTTOMRIGHT ? SNAP_RIGHT : SNAP_LEFT;
 }
 
-/* Whether a window still fills the half it was snapped to: moved or sized
+static int snap_quarter(int side, int lower)
+{
+    if (side == SNAP_LEFT)
+        return lower ? SNAP_BOTTOMLEFT : SNAP_TOPLEFT;
+    return lower ? SNAP_BOTTOMRIGHT : SNAP_TOPRIGHT;
+}
+
+/* The part of the work area a snapped window fills: a half or a quarter, or
+ * all of it for SNAP_MAXIMIZE. */
+static void snap_area(int zone, int *x, int *y, int *w, int *h)
+{
+    int area_h = screen_h - taskbar_height, left = screen_w / 2, top = area_h / 2;
+
+    *x = 0;
+    *y = AREA_Y;
+    *w = screen_w;
+    *h = area_h;
+    if (zone == SNAP_MAXIMIZE)
+        return;
+    if (snap_side(zone) == SNAP_RIGHT) {
+        *x = left;
+        *w = screen_w - left;
+    } else {
+        *w = left;
+    }
+    if (zone == SNAP_TOPLEFT || zone == SNAP_TOPRIGHT) {
+        *h = top;
+    } else if (zone == SNAP_BOTTOMLEFT || zone == SNAP_BOTTOMRIGHT) {
+        *y = AREA_Y + top;
+        *h = area_h - top;
+    }
+}
+
+/* Whether a window still fills the part it was snapped to: moved or sized
  * since, it no longer counts as snapped. */
 static int still_snapped(struct client *c)
 {
@@ -561,7 +594,7 @@ static int still_snapped(struct client *c)
     int x, y, w, h;
 
     if (c->snapped && !c->maximized) {
-        half_area(c->snapped, &x, &y, &w, &h);
+        snap_area(c->snapped, &x, &y, &w, &h);
         if (!XGetWindowAttributes(dpy, c->win, &wa) ||
             wa.x != x || wa.y != y || wa.width != w || wa.height != h)
             c->snapped = 0;
@@ -569,9 +602,9 @@ static int still_snapped(struct client *c)
     return c->snapped;
 }
 
-/* Snap a window to one half of the work area. Where it was before (x, y, w,
- * h) is kept for going back, unless it was snapped already. */
-static void snap(struct client *c, int side, int x, int y, int w, int h)
+/* Snap a window to a half or a quarter of the work area. Where it was before
+ * (x, y, w, h) is kept for going back, unless it was snapped already. */
+static void snap(struct client *c, int zone, int x, int y, int w, int h)
 {
     if (!still_snapped(c)) {
         c->snap_x = x;
@@ -579,8 +612,8 @@ static void snap(struct client *c, int side, int x, int y, int w, int h)
         c->snap_w = w;
         c->snap_h = h;
     }
-    c->snapped = side;
-    half_area(side, &x, &y, &w, &h);
+    c->snapped = zone;
+    snap_area(zone, &x, &y, &w, &h);
     XMoveResizeWindow(dpy, c->win, x, y, w, h);
     if (c->maximized) {
         c->maximized = 0;
@@ -946,14 +979,16 @@ static void on_property(XPropertyEvent *e)
  * Wine hands title-bar and border drags over to the window manager with
  * _NET_WM_MOVERESIZE, as on any Linux desktop, and waits for the mouse
  * button to come up. A move that ends with the pointer on the left or right
- * edge of the screen snaps the window to that half of the work area; on the
- * top edge, it maximises the window. An outline shows where it will go. The
- * window menu's Move and Size, done with the keyboard, come here too.
+ * edge of the screen snaps the window to that half of the work area, in a
+ * corner to that quarter; on the top edge, it maximises the window. An
+ * outline shows where it will go. The window menu's Move and Size, done with
+ * the keyboard, come here too.
  */
 #define DRAG_THRESHOLD  4       /* pixels the pointer moves before a press becomes a drag */
 #define KEY_STEP        8       /* pixels per arrow key, moving or sizing with the keyboard */
 #define TITLE_KEEP      32      /* pixels of a moved window kept above the taskbar */
 #define SNAP_EDGE       8       /* pixels from an edge of the screen that count as on it */
+#define SNAP_CORNER     64      /* pixels along an edge from a corner that snap to its quarter */
 #define OUTLINE_WIDTH   6
 #define OUTLINE_INSET   8       /* from the edges of the area the window will fill */
 
@@ -989,14 +1024,7 @@ static void show_outline(int zone)
                                        CopyFromParent, CWOverrideRedirect | CWBackPixel, &swa);
         }
     }
-    if (zone == SNAP_MAXIMIZE) {
-        x = 0;
-        y = AREA_Y;
-        w = screen_w;
-        h = screen_h - taskbar_height;
-    } else {
-        half_area(zone, &x, &y, &w, &h);
-    }
+    snap_area(zone, &x, &y, &w, &h);
     x += OUTLINE_INSET;
     y += OUTLINE_INSET;
     w -= 2 * OUTLINE_INSET;
@@ -1012,17 +1040,34 @@ static void show_outline(int zone)
         XMapRaised(dpy, outline[i]);
 }
 
-/* Which snap the pointer's place on the screen's edges calls for. The edges
+/* Which snap the pointer's place on the screen's edges calls for: a corner
+ * (on an edge, SNAP_CORNER pixels or less from the corner) that quarter, the
+ * left or right edge that half, the top edge the whole work area. The edges
  * are SNAP_EDGE pixels wide: in a virtual machine's window the pointer may
  * stop short of the last pixel (QEMU's own window never reaches the right
  * and bottom ones), or leave the window before it gets there. */
 static int zone_at(struct client *c, int px, int py)
 {
-    if (px < SNAP_EDGE && (c->functions & MWM_FUNC_RESIZE))
-        return SNAP_LEFT;
-    if (px >= screen_w - SNAP_EDGE && (c->functions & MWM_FUNC_RESIZE))
-        return SNAP_RIGHT;
-    if (py < SNAP_EDGE && (c->functions & MWM_FUNC_MAXIMIZE))
+    int left = px < SNAP_EDGE, right = px >= screen_w - SNAP_EDGE;
+    int top = py < SNAP_EDGE, bottom = py >= screen_h - SNAP_EDGE;
+    int near_left = px < SNAP_CORNER, near_right = px >= screen_w - SNAP_CORNER;
+    int near_top = py < SNAP_CORNER, near_bottom = py >= screen_h - SNAP_CORNER;
+
+    if (c->functions & MWM_FUNC_RESIZE) {
+        if ((left && near_top) || (top && near_left))
+            return SNAP_TOPLEFT;
+        if ((right && near_top) || (top && near_right))
+            return SNAP_TOPRIGHT;
+        if ((left && near_bottom) || (bottom && near_left))
+            return SNAP_BOTTOMLEFT;
+        if ((right && near_bottom) || (bottom && near_right))
+            return SNAP_BOTTOMRIGHT;
+        if (left)
+            return SNAP_LEFT;
+        if (right)
+            return SNAP_RIGHT;
+    }
+    if (top && (c->functions & MWM_FUNC_MAXIMIZE))
         return SNAP_MAXIMIZE;
     return SNAP_NONE;
 }
@@ -1227,10 +1272,13 @@ static void end_drag(int cancel)
 
 /*
  * Windows+Left and Windows+Right snap the active window to that half of the
- * work area (the other way, a snapped window goes back to where it was);
- * Windows+Up maximises it; Windows+Down restores a maximised or snapped
- * window, or else minimises it. The keys are seen raw, as they go to the
- * program; the shell keeps them from it.
+ * work area (the other way, a half goes back to where it was and a quarter
+ * goes across). Windows+Up and Windows+Down take a snapped window a step up
+ * or down its side: top quarter, half, bottom quarter; above the top
+ * quarter it is maximised, below the bottom one it goes back to where it
+ * was. Otherwise Windows+Up maximises, and Windows+Down restores a maximised
+ * window or minimises. The keys are seen raw, as they go to the program;
+ * the shell keeps them from it.
  */
 static KeyCode key_left, key_right, key_up, key_down;
 
@@ -1263,12 +1311,19 @@ static void snap_key(KeyCode key)
     struct client *c = focused;
     XWindowAttributes wa;
     int side = key == key_left ? SNAP_LEFT : SNAP_RIGHT, area_h = screen_h - taskbar_height;
+    int zone, half, upper;
 
     if (!c || drag.c || c->iconic || c->fullscreen || c->tray || is_shell_window(c->win, NULL) ||
         !XGetWindowAttributes(dpy, c->win, &wa))
         return;
+    zone = c->maximized ? SNAP_NONE : still_snapped(c);
+    half = zone == SNAP_LEFT || zone == SNAP_RIGHT;
+    upper = zone == SNAP_TOPLEFT || zone == SNAP_TOPRIGHT;
     if (key == key_up) {
-        if (!c->maximized && (c->functions & MWM_FUNC_MAXIMIZE))
+        /* a snapped window goes up a step: bottom quarter, half, top quarter, maximised */
+        if (zone && !upper && (c->functions & MWM_FUNC_RESIZE))
+            snap(c, half ? snap_quarter(snap_side(zone), 0) : snap_side(zone), 0, 0, 0, 0);
+        else if (!c->maximized && (c->functions & MWM_FUNC_MAXIMIZE))
             maximize(c);
     } else if (key == key_down) {
         if (c->maximized) {
@@ -1281,7 +1336,10 @@ static void snap_key(KeyCode key)
                 c->saved_y = AREA_Y + (area_h - c->saved_h) / 2;
             }
             restore(c);
-        } else if (still_snapped(c)) {
+        } else if (half || upper) {
+            /* a step down: top quarter, half, bottom quarter, where it was */
+            snap(c, half ? snap_quarter(snap_side(zone), 1) : snap_side(zone), 0, 0, 0, 0);
+        } else if (zone) {
             unsnap(c);
         } else if (c->functions & MWM_FUNC_MINIMIZE) {
             iconify(c);
@@ -1293,10 +1351,14 @@ static void snap_key(KeyCode key)
             snap(c, side, c->saved_x, c->saved_y, c->saved_w, c->saved_h);
         else
             snap(c, side, wa.x, wa.y, wa.width, wa.height);
-    } else if (!still_snapped(c)) {
+    } else if (!zone) {
         snap(c, side, wa.x, wa.y, wa.width, wa.height);
-    } else if (c->snapped != side) {
-        unsnap(c);
+    } else if (snap_side(zone) != side) {
+        /* the other way: a half goes back to where it was, a quarter across */
+        if (half)
+            unsnap(c);
+        else
+            snap(c, snap_quarter(side, !upper), 0, 0, 0, 0);
     }
 }
 

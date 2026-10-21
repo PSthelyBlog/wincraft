@@ -87,10 +87,11 @@ Verified in QEMU, booting the ISO, unless noted:
 - Desktop shell: Start menu with type-to-search, taskbar with running
   windows, minimise / maximise / restore, drag, Run dialog (Win+R), context
   menus, Windows key, clock, Alt+Tab, window snapping (a window dragged to
-  the left or right edge of the screen fills that half, to the top edge it
-  is maximised; Win+Left, Win+Right, Win+Up and Win+Down do the same),
-  programs' notification-area icons (with their tooltips, balloons and
-  menus, for 32- and 64-bit programs) in the taskbar beside the clock.
+  the left or right edge of the screen fills that half, to a corner that
+  quarter, to the top edge it is maximised; Win+Left, Win+Right, Win+Up and
+  Win+Down do the same), programs' notification-area icons (with their
+  tooltips, balloons and menus, for 32- and 64-bit programs) in the taskbar
+  beside the clock.
   Programs set to start with Windows (the Run keys and the Startup folder)
   start at login, once the taskbar is there.
   A program that installs several shortcuts in its own folder gets one
