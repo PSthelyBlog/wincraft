@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.17 — 2026-10-21
+
+Programs' notification-area icons are in the taskbar.
+
+- **Notification-area icons in the taskbar.** The icons programs keep
+  beside the clock, such as those of chat, game or VPN programs, now show
+  in WinCraft's taskbar, with their tooltips and balloons, instead of in a
+  small floating window above it. A click goes to the program and a
+  right-click opens its menu, for 32- and 64-bit programs alike. Icons of
+  programs that end disappear, and programs already running add theirs
+  again when the taskbar restarts. The menus of these icons work with the
+  mouse only: Wine gives the keyboard only to a program's visible windows.
+- Everything else is as in 0.7.16.
+
 ## 0.7.16 — 2026-10-20
 
 The taskbar can be at the top of the screen.
