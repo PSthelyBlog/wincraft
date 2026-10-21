@@ -2035,16 +2035,23 @@ static void autostart(void)
     char line[2048], *p;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
-    HKEY key;
+    HKEY parent, key;
     DWORD made;
+    LONG err;
 
     if (read_native_file(L"/proc/cmdline", line, sizeof(line)))
         for (p = line; (p = strstr(p, "wc.nofeatures")); p++)
             if ((p == line || p[-1] == ' ') && (!p[13] || p[13] == ' '))
                 return;
-    /* a volatile key lasts as long as the session's Wine server */
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\WinCraft\\Session", 0, NULL, REG_OPTION_VOLATILE,
-                        KEY_READ, NULL, &key, &made))
+    /* A volatile key lasts as long as the session's Wine server. The keys
+     * created on the way to one are volatile too, and no lasting key can go
+     * under a volatile one: WinCraft's own key must exist first, or the
+     * shell's settings could not be saved in it. */
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\WinCraft", 0, NULL, 0, KEY_READ, NULL, &parent, NULL))
+        return;
+    err = RegCreateKeyExW(parent, L"Session", 0, NULL, REG_OPTION_VOLATILE, KEY_READ, NULL, &key, &made);
+    RegCloseKey(parent);
+    if (err)
         return;
     RegCloseKey(key);
     if (made != REG_CREATED_NEW_KEY)
