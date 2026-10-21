@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.19 — 2026-10-21
+
+Programs set to start with Windows start at login.
+
+- **"Start with Windows" works.** Programs that start with Windows, from
+  the Run keys or the Startup folder, such as clipboard managers or chat
+  programs, now start at each login, once the taskbar is there, so their
+  notification icons appear in it. Before, the option did nothing: Wine
+  runs these entries only when asked, and WinCraft never asked. They start
+  once per session, not again when the taskbar restarts, and not with the
+  boot menu's "without your features" entry, which is for repairing a
+  computer that does not work.
+- Everything else is as in 0.7.18.
+
 ## 0.7.18 — 2026-10-21
 
 A fix in Wine for programs' menus.
