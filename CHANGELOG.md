@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.22 — 2026-10-21
+
+A fix to window snapping.
+
+- **Windows snap to the right half when dragged to the right edge.** In
+  0.7.21 the pointer had to reach the screen's very last pixel, which
+  QEMU's own window never sends on the right (nor at the bottom), so only
+  the left and top edges worked there. The few pixels nearest each edge now
+  count as the edge.
+- Everything else is as in 0.7.21.
+
 ## 0.7.21 — 2026-10-21
 
 Window snapping, and the desktop's settings can be saved again.
