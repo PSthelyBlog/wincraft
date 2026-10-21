@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.21 — 2026-10-21
+
+Window snapping, and the desktop's settings can be saved again.
+
+- **Window snapping.** Drag a window by its title bar to the left or right
+  edge of the screen and it fills that half, above the taskbar; drag it to
+  the top edge and it is maximised. While the pointer is at the edge, an
+  outline shows where the window will go, and Esc cancels the drag. Drag a
+  snapped window away and it gets its earlier size back.
+- **Windows+arrow keys.** Windows+Left and Windows+Right snap the window in
+  front to that half of the screen (pressed the other way, a snapped window
+  goes back to where it was), Windows+Up maximises it, and Windows+Down
+  restores a maximised or snapped window, or else minimises it. The program
+  does not see these keys, and the Start menu does not open.
+- WinCraft's window manager now moves and sizes windows itself when
+  programs hand that over, as on other Linux desktops. A moved window's
+  title bar stays within reach: not above the top of the screen, nor behind
+  the taskbar. Windows that cannot be resized do not snap, and snapped
+  windows follow when the taskbar moves to the top or the bottom.
+- **Fixed: the taskbar's and desktop's settings could not be saved** in
+  0.7.19 and 0.7.20, in a live session or on a system installed with them.
+  Changing the accent colour, the taskbar's position or auto-hide failed,
+  whether the Assistant or you made the change: what makes programs start
+  only once per session made WinCraft's own registry key a temporary one,
+  and nothing lasting can be saved under that.
+- Everything else is as in 0.7.20.
+
 ## 0.7.20 — 2026-10-21
 
 A security update of the kernel.
