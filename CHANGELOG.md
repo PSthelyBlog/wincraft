@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.20 — 2026-10-21
+
+A security update of the kernel.
+
+- **Linux 6.18.58**, the long-term series' newest release, out the same
+  day as 0.7.19. Its point releases carry security fixes.
+- The build takes the kernel's checksums from kernel.org itself rather than
+  from its download network, whose copy lagged days behind this release.
+- Everything else is as in 0.7.19, including Wine (11.19) and the Arch
+  packages (as of 2026-10-16), which have every published fix.
+
 ## 0.7.19 — 2026-10-21
 
 Programs set to start with Windows start at login.
