@@ -545,9 +545,10 @@ static int adopt_shell_window(Window win)
 }
 
 /*
- * Notification-area ("tray") icons live in a small window owned by the
- * runtime's explorer process. Dock it in the corner by the clock: above it,
- * or below it when the taskbar is at the top.
+ * Notification-area ("tray") icons are the taskbar's own, but if Wine's
+ * floating tray window (its explorer process's) is turned back on, dock it
+ * in the corner by the clock: above it, or below it when the taskbar is at
+ * the top.
  */
 static int is_tray_window(Window win)
 {

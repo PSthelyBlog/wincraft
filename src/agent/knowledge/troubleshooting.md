@@ -187,6 +187,12 @@ Change them yourself; the WinCraft Agent is not needed.
   `Control Panel\Desktop`, `ActiveWndTrkTimeout` (dword, milliseconds; 0 at
   once). As on Windows, the window gets the keyboard without coming to the
   front, and an open menu stays open.
+- Programs' notification-area icons show in the taskbar, beside the clock,
+  with their tooltips and balloons; a click goes to the program, a
+  right-click opens its menu. Their menus work with the mouse only (Wine
+  gives the keyboard only to a program's visible windows). Wine's own
+  floating tray window is turned off (`Software\Wine\Explorer`,
+  `ShowSystray` dword 0). There is nothing to set.
 - Alt+Tab switches windows: the window in front first, then the others, most
   recently used first and minimized ones last. Tab moves on, Shift+Tab back,
   releasing Alt switches, Esc cancels. There is nothing to set.

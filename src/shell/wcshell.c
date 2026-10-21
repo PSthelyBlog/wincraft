@@ -83,7 +83,7 @@ static struct palette g_pal;
 #define WM_PREFS_CHANGED (WM_APP + 4)
 #define WM_SWITCHER     (WM_APP + 5)    /* wParam: one of SWITCH_* below */
 enum { CMD_RUN = 1, CMD_FILES, CMD_SHOW_DESKTOP };
-enum { TIMER_TASKS = 1, TIMER_CLOCK, TIMER_ICONS, TIMER_EVENT, TIMER_AUTOHIDE, TIMER_PREFS };
+enum { TIMER_TASKS = 1, TIMER_CLOCK, TIMER_ICONS, TIMER_EVENT, TIMER_AUTOHIDE, TIMER_PREFS, TIMER_BALLOON };
 enum { HK_RUN = 1, HK_FILES, HK_DESKTOP, HK_START };
 enum { IDM_RESTORE = 100, IDM_MINIMIZE, IDM_MAXIMIZE, IDM_CLOSE,
        IDM_REFRESH, IDM_OPEN_DESKTOP, IDM_RUN, IDM_ABOUT, IDM_SETTINGS };
@@ -735,6 +735,7 @@ struct icon_item {
 
 static void hide_menu(void);
 static void layout_tasks(void);
+static void tray_tips(void);
 
 static struct icon_item *g_icons;
 static int g_nicons, g_icon_sel = -1, g_icon_pressed = -1;
@@ -1010,6 +1011,7 @@ static LRESULT CALLBACK desktop_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         hide_menu();
         load_icons();
         layout_tasks();
+        tray_tips();
         InvalidateRect(g_bar, NULL, FALSE);
         return 0;
     case WM_MOUSEACTIVATE:
@@ -1616,7 +1618,7 @@ struct exe_icon {
 };
 
 static struct task g_tasks[64];
-static int g_ntasks, g_bar_hot = -1;   /* -1 none, -2 start, -3 peek, >= 0 task */
+static int g_ntasks, g_bar_hot = -1;   /* -1 none, -2 start, -3 peek, >= 0 task, <= -10 tray icon */
 static HWND g_active;
 static struct exe_icon g_exe_icons[64];
 static int g_nexe_icons;
@@ -1681,10 +1683,366 @@ static BOOL CALLBACK enum_task(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
+/* ---- notification area: the icons programs show with Shell_NotifyIcon.
+ * Wine's shell32 sends them to the first "Shell_TrayWnd" window, which is
+ * this taskbar, as on Windows (Wine's own floating tray window stays empty,
+ * and is turned off: Software\Wine\Explorer, ShowSystray). The message is
+ * in shell32's own format, struct notify_data in dlls/shell32/systray.c,
+ * the same for 32- and 64-bit programs. ---- */
+#define TRAY_MAX        32
+#define TRAY_SLOT       24              /* the width of one icon's place */
+#define TRAY_HIT(i)     (-10 - (i))     /* what bar_hit returns for icon i */
+#define IS_TRAY_HIT(h)  ((h) <= -10)
+#define TRAY_INDEX(h)   (-10 - (h))
+#define BALLOON_TOOL    1
+
+struct wine_tray_bitmap { UINT width, height, planes, bpp; };
+struct wine_tray_data {
+    LONG hwnd;
+    UINT id, flags, callback;
+    struct wine_tray_bitmap icon;
+    WCHAR tip[128];
+    DWORD state, state_mask;
+    WCHAR info[256];
+    UINT timeout_or_version;
+    WCHAR info_title[64];
+    DWORD info_flags;
+    GUID guid;
+    struct wine_tray_bitmap balloon_icon;
+    BYTE bits[];        /* the icon's mask, then its colours, as GetBitmapBits gives them */
+};
+
+struct tray_icon {
+    HWND owner;
+    UINT id, callback, version;
+    HICON icon;
+    BOOL hidden;
+    WCHAR tip[128];
+    RECT rc;            /* its place in the taskbar; empty when not shown */
+};
+
+static struct tray_icon g_tray[TRAY_MAX];
+static int g_ntray, g_tray_left;        /* where the icons start, left of the clock */
+static HWND g_tray_tip, g_balloon;      /* tooltips: the icons' texts, a balloon */
+static int g_balloon_of = -1;           /* the icon whose balloon is showing */
+
+/* The icon from the bitmaps' bits, sized the way shell32 sized them. */
+static HICON tray_bits_icon(const struct wine_tray_bitmap *bm, const BYTE *bits, size_t avail)
+{
+    ICONINFO ii = { TRUE, 0, 0, NULL, NULL };
+    BOOL mono = bm->bpp == 1;           /* a mask twice as tall, and no colours */
+    size_t mask, color;
+    HICON icon;
+
+    if (!bm->width || !bm->height || bm->width > 256 || bm->height > 256 || bm->planes != 1 || bm->bpp > 32)
+        return NULL;
+    mask = ((size_t)bm->width * bm->height * (mono ? 2 : 1) + 15) / 16 * 2;
+    color = mono ? 0 : ((size_t)bm->width * bm->height * bm->bpp + 15) / 16 * 2;
+    if (mask + color > avail)
+        return NULL;
+    ii.hbmMask = CreateBitmap(bm->width, bm->height * (mono ? 2 : 1), 1, 1, bits);
+    if (!mono)
+        ii.hbmColor = CreateBitmap(bm->width, bm->height, 1, bm->bpp, bits + mask);
+    icon = CreateIconIndirect(&ii);
+    DeleteObject(ii.hbmMask);
+    if (ii.hbmColor)
+        DeleteObject(ii.hbmColor);
+    return icon;
+}
+
+/* Tell the program about its icon, the way Windows does for its version of
+ * the interface; FALSE if the program is gone, and the icon with it. */
+static void tray_remove(int i);
+static BOOL tray_notify(int i, UINT msg, POINT pt)
+{
+    struct tray_icon *t = &g_tray[i];
+    WPARAM wp = t->id;
+    LPARAM lp = msg;
+
+    if (!t->callback)
+        return TRUE;
+    if (t->version >= NOTIFYICON_VERSION_4) {
+        wp = MAKEWPARAM(pt.x, pt.y);
+        lp = MAKELPARAM(msg, t->id);
+    }
+    if (!SendNotifyMessageW(t->owner, t->callback, wp, lp) && GetLastError() == ERROR_INVALID_WINDOW_HANDLE) {
+        tray_remove(i);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void balloon_tool(TTTOOLINFOW *ti, UINT flags)  /* the balloon's one tool */
+{
+    ZeroMemory(ti, sizeof(*ti));
+    ti->cbSize = TTTOOLINFOW_V2_SIZE;
+    ti->uFlags = flags;
+    ti->hwnd = g_bar;
+    ti->uId = BALLOON_TOOL;
+}
+
+static POINT tray_anchor(int i)        /* the middle of the icon's edge facing the desktop */
+{
+    POINT pt = { (g_tray[i].rc.left + g_tray[i].rc.right) / 2, BAR_INNER_Y };
+
+    return pt;
+}
+
+static void balloon_close(UINT why)    /* why: NIN_BALLOONTIMEOUT and the like, or 0 */
+{
+    TTTOOLINFOW ti;
+    int i = g_balloon_of;
+
+    if (i < 0)
+        return;
+    g_balloon_of = -1;
+    KillTimer(g_bar, TIMER_BALLOON);
+    balloon_tool(&ti, 0);
+    SendMessageW(g_balloon, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+    if (why)
+        tray_notify(i, why, tray_anchor(i));
+    autohide_later();
+}
+
+static void balloon_show(int i, const WCHAR *title, const WCHAR *text, DWORD flags, UINT timeout)
+{
+    TTTOOLINFOW ti;
+    DWORD kind = flags & NIIF_ICON_MASK;
+    POINT pt;
+
+    balloon_close(g_balloon_of == i ? 0 : NIN_BALLOONHIDE);
+    if (!g_balloon || IsRectEmpty(&g_tray[i].rc))
+        return;
+    place_bar(FALSE);                   /* a taskbar that hides itself comes back for it */
+    balloon_tool(&ti, TTF_TRACK | TTF_ABSOLUTE);
+    ti.lpszText = (WCHAR *)text;
+    SendMessageW(g_balloon, TTM_SETTITLEW, kind == NIIF_INFO ? TTI_INFO : kind == NIIF_WARNING ? TTI_WARNING :
+                 kind == NIIF_ERROR ? TTI_ERROR : TTI_NONE, (LPARAM)title);
+    SendMessageW(g_balloon, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+    pt = tray_anchor(i);
+    SendMessageW(g_balloon, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x, pt.y));
+    SendMessageW(g_balloon, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+    g_balloon_of = i;
+    SetTimer(g_bar, TIMER_BALLOON, timeout, NULL);
+    tray_notify(i, NIN_BALLOONSHOW, pt);
+}
+
+/* A click on the balloon is the program's to handle. */
+static WNDPROC g_balloon_proc;
+static LRESULT CALLBACK balloon_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_LBUTTONUP && g_balloon_of >= 0) {
+        int i = g_balloon_of;
+
+        if (IsWindow(g_tray[i].owner))
+            SetForegroundWindow(g_tray[i].owner);   /* it may open a window: let it come to the front */
+        balloon_close(NIN_BALLOONUSERCLICK);
+        return 0;
+    }
+    return CallWindowProcW(g_balloon_proc, hwnd, msg, wp, lp);
+}
+
+static void tray_remove(int i)
+{
+    if (g_balloon_of == i)
+        balloon_close(NIN_BALLOONHIDE);
+    else if (g_balloon_of > i)
+        g_balloon_of--;
+    if (g_tray[i].icon)
+        DestroyIcon(g_tray[i].icon);
+    memmove(&g_tray[i], &g_tray[i + 1], (g_ntray - i - 1) * sizeof(g_tray[0]));
+    g_ntray--;
+}
+
+/* The icons' places, right-aligned against the clock. */
+static void tray_place(void)
+{
+    int i, n = 0, x;
+
+    for (i = 0; i < g_ntray; i++)
+        if (!g_tray[i].hidden && g_tray[i].icon)
+            n++;
+    x = g_tray_left = g_sw - PEEK_W - CLOCK_W - n * TRAY_SLOT;
+    for (i = 0; i < g_ntray; i++) {
+        if (g_tray[i].hidden || !g_tray[i].icon) {
+            SetRectEmpty(&g_tray[i].rc);
+            continue;
+        }
+        SetRect(&g_tray[i].rc, x, 0, x + TRAY_SLOT, BAR_H);
+        x += TRAY_SLOT;
+    }
+}
+
+/* One tooltip per shown icon, with its text. */
+static void tray_tips(void)
+{
+    TTTOOLINFOW ti;
+    int i;
+
+    if (!g_tray_tip)
+        return;
+    ZeroMemory(&ti, sizeof(ti));
+    ti.cbSize = TTTOOLINFOW_V2_SIZE;
+    ti.hwnd = g_bar;
+    for (i = 0; i < TRAY_MAX; i++) {
+        ti.uId = i;
+        SendMessageW(g_tray_tip, TTM_DELTOOLW, 0, (LPARAM)&ti);
+    }
+    for (i = 0; i < g_ntray; i++) {
+        if (IsRectEmpty(&g_tray[i].rc) || !g_tray[i].tip[0])
+            continue;
+        ti.uFlags = TTF_SUBCLASS;
+        ti.uId = i;
+        ti.rect = g_tray[i].rc;
+        ti.lpszText = g_tray[i].tip;
+        SendMessageW(g_tray_tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    }
+}
+
+static void tray_changed(void)
+{
+    layout_tasks();                     /* which places the icons first */
+    tray_tips();
+    InvalidateRect(g_bar, NULL, FALSE);
+}
+
+/* Shell_NotifyIcon's message: NIM_ADD, NIM_MODIFY, NIM_DELETE and the others. */
+static BOOL tray_message(const COPYDATASTRUCT *cds)
+{
+    const struct wine_tray_data *d = cds->lpData;
+    struct tray_icon *t;
+    HWND owner;
+    int i;
+
+    if (cds->dwData > NIM_SETVERSION || !d || cds->cbData < sizeof(*d))
+        return FALSE;               /* not shell32's message */
+    owner = (HWND)(LONG_PTR)d->hwnd;
+    for (i = 0; i < g_ntray; i++)
+        if (g_tray[i].owner == owner && g_tray[i].id == d->id)
+            break;
+    if (cds->dwData == NIM_ADD) {
+        if (i < g_ntray || g_ntray == TRAY_MAX)
+            return FALSE;
+        ZeroMemory(&g_tray[i], sizeof(g_tray[i]));
+        g_tray[i].owner = owner;
+        g_tray[i].id = d->id;
+        g_ntray++;
+    } else if (i == g_ntray) {
+        return FALSE;
+    }
+    t = &g_tray[i];
+    switch (cds->dwData) {
+    case NIM_DELETE:
+        tray_remove(i);
+        tray_changed();
+        return TRUE;
+    case NIM_SETVERSION:
+        t->version = d->timeout_or_version;
+        return TRUE;
+    case NIM_SETFOCUS:
+        return TRUE;
+    }
+    /* NIM_ADD, NIM_MODIFY */
+    if (d->flags & NIF_MESSAGE)
+        t->callback = d->callback;
+    if (d->flags & NIF_ICON) {
+        HICON icon = tray_bits_icon(&d->icon, d->bits, cds->cbData - sizeof(*d));
+
+        if (t->icon)
+            DestroyIcon(t->icon);
+        t->icon = icon;
+    }
+    if (d->flags & NIF_TIP)
+        lstrcpynW(t->tip, d->tip, ARRAYSIZE(t->tip));
+    if ((d->flags & NIF_STATE) && (d->state_mask & NIS_HIDDEN))
+        t->hidden = (d->state & NIS_HIDDEN) != 0;
+    tray_changed();
+    if (d->flags & NIF_INFO) {
+        WCHAR title[64], text[256];
+
+        lstrcpynW(title, d->info_title, ARRAYSIZE(title));
+        lstrcpynW(text, d->info, ARRAYSIZE(text));
+        if (text[0])
+            balloon_show(i, title, text, d->info_flags,
+                         d->timeout_or_version < 10000 ? 10000 : d->timeout_or_version > 30000 ? 30000 :
+                         d->timeout_or_version);
+        else if (g_balloon_of == i)
+            balloon_close(NIN_BALLOONHIDE);
+    }
+    return TRUE;
+}
+
+/* The pointer on an icon: the program gets the mouse message, and for its
+ * newer interface the "selected" and "context menu" notifications. */
+static void tray_mouse(int i, UINT msg)
+{
+    POINT pt;
+
+    GetCursorPos(&pt);
+    /* The program shows its menu or window next. The click was the taskbar's,
+     * so under Windows' foreground lock, which Wine keeps (without
+     * AllowSetForegroundWindow), only the taskbar may bring it forward. */
+    if (msg != WM_MOUSEMOVE && IsWindow(g_tray[i].owner))
+        SetForegroundWindow(g_tray[i].owner);
+    if (!tray_notify(i, msg, pt))
+        return;
+    if (g_tray[i].version > 0 && msg == WM_LBUTTONUP)
+        tray_notify(i, NIN_SELECT, pt);
+    else if (g_tray[i].version > 0 && msg == WM_RBUTTONUP)
+        tray_notify(i, WM_CONTEXTMENU, pt);
+}
+
+/* The tooltips, Wine's floating tray window turned off, and the programs
+ * already running asked to add their icons again, as when Windows' taskbar
+ * starts. */
+static void tray_start(HINSTANCE inst)
+{
+    TTTOOLINFOW ti;
+    HKEY key;
+    DWORD off = 0;
+
+    g_tray_tip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, TOOLTIPS_CLASSW, NULL,
+                                 WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, 0, 0, 0, 0, g_bar, NULL, inst, NULL);
+    g_balloon = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, TOOLTIPS_CLASSW, NULL,
+                                WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP | TTS_BALLOON, 0, 0, 0, 0, g_bar, NULL,
+                                inst, NULL);
+    if (g_balloon) {
+        balloon_tool(&ti, TTF_TRACK | TTF_ABSOLUTE);
+        ti.lpszText = (WCHAR *)L"";
+        SendMessageW(g_balloon, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        SendMessageW(g_balloon, TTM_SETMAXTIPWIDTH, 0, 320);
+        g_balloon_proc = (WNDPROC)SetWindowLongPtrW(g_balloon, GWLP_WNDPROC, (LONG_PTR)balloon_proc);
+    }
+    /* read by Wine's desktop program when it starts: from the next session on */
+    if (!RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Wine\\Explorer", 0, NULL, 0,
+                         KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key, NULL)) {
+        if (RegQueryValueExW(key, L"ShowSystray", NULL, NULL, NULL, NULL))
+            RegSetValueExW(key, L"ShowSystray", 0, REG_DWORD, (const BYTE *)&off, sizeof(off));
+        RegCloseKey(key);
+    }
+    PostMessageW(HWND_BROADCAST, RegisterWindowMessageW(L"TaskbarCreated"), 0, 0);
+}
+
+/* Icons of programs that ended without removing them. */
+static void tray_prune(void)
+{
+    int i, gone = 0;
+
+    for (i = g_ntray - 1; i >= 0; i--)
+        if (!IsWindow(g_tray[i].owner)) {
+            tray_remove(i);
+            gone = 1;
+        }
+    if (gone)
+        tray_changed();
+}
+
 static void layout_tasks(void)
 {
-    int left = START_W + 6, avail = g_sw - CLOCK_W - PEEK_W - 8 - left, w, i;
+    int left = START_W + 6, avail, w, i;
 
+    tray_place();
+    avail = g_tray_left - 8 - left;
     if (!g_ntasks)
         return;
     w = avail / g_ntasks;
@@ -1787,6 +2145,21 @@ static void paint_bar(HWND hwnd)
                  IsIconic(t->hwnd) ? C_DIM : C_TEXT);
     }
 
+    /* notification icons */
+    for (i = 0; i < g_ntray; i++) {
+        RECT ir = g_tray[i].rc;
+
+        if (IsRectEmpty(&ir))
+            continue;
+        if (g_bar_hot == TRAY_HIT(i)) {
+            ir.top = body;
+            ir.bottom = body + BAR_H - 1;
+            fill(mem, &ir, C_HOT);
+        }
+        DrawIconEx(mem, ir.left + (TRAY_SLOT - 16) / 2, (BAR_H - 16) / 2, g_tray[i].icon, 16, 16, 0, NULL,
+                   DI_NORMAL);
+    }
+
     /* clock */
     GetLocalTime(&now);
     GetTimeFormatW(LOCALE_USER_DEFAULT, g_prefs.seconds ? 0 : TIME_NOSECONDS, &now, NULL, buf,
@@ -1818,6 +2191,9 @@ static int bar_hit(int x, int y)
         return -2;
     if (x >= g_sw - PEEK_W)
         return -3;
+    for (i = 0; i < g_ntray; i++)
+        if (PtInRect(&g_tray[i].rc, pt))
+            return TRAY_HIT(i);
     for (i = 0; i < g_ntasks; i++)
         if (PtInRect(&g_tasks[i].rc, pt))
             return i;
@@ -2060,7 +2436,18 @@ static LRESULT CALLBACK switcher_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg >= WM_MOUSEMOVE && msg <= WM_MBUTTONDBLCLK) {
+        int hit = bar_hit(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+
+        if (IS_TRAY_HIT(hit)) {
+            tray_mouse(TRAY_INDEX(hit), msg);
+            if (msg != WM_MOUSEMOVE)    /* which also lights the icon up, below */
+                return 0;
+        }
+    }
     switch (msg) {
+    case WM_COPYDATA:
+        return tray_message((const COPYDATASTRUCT *)lp);
     case WM_CREATE:
         SetTimer(hwnd, TIMER_TASKS, 1000, NULL);    /* safety net; events do the work */
         SetTimer(hwnd, TIMER_CLOCK, g_prefs.seconds ? 1000 : 5000, NULL);
@@ -2084,12 +2471,15 @@ static LRESULT CALLBACK bar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             refresh_tasks();
         } else if (wp == TIMER_TASKS) {
             refresh_tasks();
+            tray_prune();
+        } else if (wp == TIMER_BALLOON) {
+            balloon_close(NIN_BALLOONTIMEOUT);
         } else if (wp == TIMER_AUTOHIDE) {
             POINT pt;
 
             KillTimer(hwnd, TIMER_AUTOHIDE);
             GetCursorPos(&pt);
-            if (g_prefs.autohide && !IsWindowVisible(g_menu) &&
+            if (g_prefs.autohide && !IsWindowVisible(g_menu) && g_balloon_of < 0 &&
                 (g_bar_top ? pt.y >= BAR_INNER_Y : pt.y < BAR_INNER_Y))
                 place_bar(TRUE);
         } else if (wp == TIMER_PREFS) {
@@ -3228,7 +3618,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     wc.lpszClassName = L"WinCraftDesktop";
     RegisterClassExW(&wc);
     wc.lpfnWndProc = bar_proc;
-    wc.lpszClassName = L"WinCraftTaskbar";
+    wc.lpszClassName = L"Shell_TrayWnd";   /* as on Windows: programs' notification icons come here */
     RegisterClassExW(&wc);
     wc.style = CS_DROPSHADOW;
     wc.lpfnWndProc = menu_proc;
@@ -3249,7 +3639,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
                                 WS_POPUP | WS_CLIPCHILDREN, 0, 0, g_sw, g_sh,
                                 NULL, NULL, inst, NULL);
     g_bar = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-                            L"WinCraftTaskbar", L"Taskbar", WS_POPUP,
+                            L"Shell_TrayWnd", L"Taskbar", WS_POPUP,
                             0, BAR_Y, g_sw, BAR_H, NULL, NULL, inst, NULL);
     g_menu = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"WinCraftStartMenu", L"Start",
                              WS_POPUP, 0, 0, MENU_W, 400, NULL, NULL, inst, NULL);
@@ -3261,6 +3651,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     SetWindowPos(g_desktop, HWND_BOTTOM, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     ShowWindow(g_bar, SW_SHOWNOACTIVATE);
+    tray_start(inst);
     autohide_later();
     write_wm_prefs();
     CloseHandle(CreateThread(NULL, 0, watch_prefs, NULL, 0, NULL));

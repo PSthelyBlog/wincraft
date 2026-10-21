@@ -17,3 +17,8 @@ REGEDIT4
 ; The WinCraft shell provides the desktop background.
 [HKEY_CURRENT_USER\Control Panel\Colors]
 "Background"="11 21 48"
+
+; WinCraft's taskbar shows programs' notification-area icons; Wine's own
+; floating tray window is not needed.
+[HKEY_CURRENT_USER\Software\Wine\Explorer]
+"ShowSystray"=dword:00000000

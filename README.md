@@ -86,7 +86,9 @@ Verified in QEMU, booting the ISO, unless noted:
 - Boot via Limine on **BIOS** and on **UEFI** (OVMF), to the desktop.
 - Desktop shell: Start menu with type-to-search, taskbar with running
   windows, minimise / maximise / restore, drag, Run dialog (Win+R), context
-  menus, Windows key, clock, Alt+Tab. A program that installs several
+  menus, Windows key, clock, Alt+Tab, programs' notification-area icons
+  (with their tooltips, balloons and menus, for 32- and 64-bit programs) in
+  the taskbar beside the clock. A program that installs several
   shortcuts in its own folder gets one folder entry in the Start menu, which
   opens in place; search still finds what is inside.
 - The desktop and taskbar follow Windows' own settings for a desktop picture
@@ -165,8 +167,8 @@ Be clear-eyed about these before you depend on it:
   Microsoft's .NET runtime: they say which one when it is missing, and it
   installs like any program. Some .NET programs fail for other reasons:
   Paint.NET 5.1's installer crashes while checking the graphics hardware.
-- Notification-area icons appear in a small floating window above the clock
-  rather than inside the taskbar.
+- The menus of notification-area icons work with the mouse, not the
+  keyboard: Wine gives the keyboard only to a program's visible windows.
 - The time zone is UTC, the keyboard layout is US unless set at boot
   (`wc.kbd=fr`), and Windows programs are in English; there is no settings
   panel for any of them yet. The WinCraft Agent can add a feature that keeps
