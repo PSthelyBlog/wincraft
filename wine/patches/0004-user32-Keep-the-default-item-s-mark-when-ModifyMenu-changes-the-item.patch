@@ -1,0 +1,40 @@
+user32: Keep the default item's mark when ModifyMenu changes the item.
+
+ModifyMenu sets an item's whole state from its flags, and MF_DEFAULT is
+not one of the flags it accepts, so it cleared the default mark of the
+item it changed. Programs that set the default item, then rename the
+menu's items for a language with ModifyMenu, lose it: Ditto, the
+clipboard manager, does this when its language is not English, so a click
+on its notification icon, which runs the menu's default item, does
+nothing. On Windows the same program opens its window, so ModifyMenu
+leaves the mark alone there; Wine's own test only checks that it cannot
+set it.
+
+Status: not for WineHQ as it stands. This patch was written with an LLM,
+and WineHQ does not accept LLM-generated code. No WineHQ bug describes
+this yet (bugs.winehq.org searched for ModifyMenu and MFS_DEFAULT on
+2026-10-21).
+---
+--- a/dlls/user32/menu.c
++++ b/dlls/user32/menu.c
+@@ -459,7 +459,7 @@
+ BOOL WINAPI ModifyMenuW( HMENU hMenu, UINT pos, UINT flags,
+                          UINT_PTR id, LPCWSTR str )
+ {
+-    MENUITEMINFOW mii;
++    MENUITEMINFOW mii, old;
+ 
+     if (IS_STRING_ITEM(flags))
+         TRACE("%p %d %04x %04Ix %s\n", hMenu, pos, flags, id, debugstr_w(str) );
+@@ -467,6 +467,11 @@
+         TRACE("%p %d %04x %04Ix %p\n", hMenu, pos, flags, id, str );
+ 
+     MENU_mnu2mnuii( flags, id, str, &mii);
++    /* ModifyMenu neither sets nor clears the default item: keep its mark */
++    old.cbSize = sizeof(old);
++    old.fMask = MIIM_STATE;
++    if (GetMenuItemInfoW( hMenu, pos, (flags & MF_BYPOSITION) != 0, &old ))
++        mii.fState |= old.fState & MFS_DEFAULT;
+     return NtUserThunkedMenuItemInfo( hMenu, pos, flags, NtUserSetMenuItemInfo, &mii, NULL );
+ }
+ 
