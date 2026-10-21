@@ -88,9 +88,11 @@ Verified in QEMU, booting the ISO, unless noted:
   windows, minimise / maximise / restore, drag, Run dialog (Win+R), context
   menus, Windows key, clock, Alt+Tab, programs' notification-area icons
   (with their tooltips, balloons and menus, for 32- and 64-bit programs) in
-  the taskbar beside the clock. A program that installs several
-  shortcuts in its own folder gets one folder entry in the Start menu, which
-  opens in place; search still finds what is inside.
+  the taskbar beside the clock. Programs set to start with Windows (the Run
+  keys and the Startup folder) start at login, once the taskbar is there.
+  A program that installs several shortcuts in its own folder gets one
+  folder entry in the Start menu, which opens in place; search still finds
+  what is inside.
 - The desktop and taskbar follow Windows' own settings for a desktop picture
   or colour, a light taskbar, the accent colour, seconds on the clock and
   focus following the mouse, and three of WinCraft's own (one-click icons, a
@@ -238,7 +240,7 @@ the system image, and survive updates.
   it. A change takes full effect at the next start.
 - The boot menu's **WinCraft OS (without your features)** entry starts with
   every feature left out, to repair one that keeps the computer from
-  working.
+  working. Programs set to start with Windows do not start either.
 - Features are made by root, or by the WinCraft Agent (below) when you
   approve one.
 

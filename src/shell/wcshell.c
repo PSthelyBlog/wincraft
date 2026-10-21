@@ -2023,6 +2023,42 @@ static void tray_start(HINSTANCE inst)
     PostMessageW(HWND_BROADCAST, RegisterWindowMessageW(L"TaskbarCreated"), 0, 0);
 }
 
+/* The programs set to start with Windows (the Run keys, RunOnce, the Startup
+ * folders), run by Wine's own wineboot as at a Windows start, which Wine
+ * itself only does when wineboot is run by hand. Once per session, after the
+ * taskbar exists so that their notification icons come to it; not again
+ * when the shell restarts, and not with the boot option wc.nofeatures,
+ * WinCraft's troubleshooting start. */
+static void autostart(void)
+{
+    WCHAR cmd[MAX_PATH + 16];
+    char line[2048], *p;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HKEY key;
+    DWORD made;
+
+    if (read_native_file(L"/proc/cmdline", line, sizeof(line)))
+        for (p = line; (p = strstr(p, "wc.nofeatures")); p++)
+            if ((p == line || p[-1] == ' ') && (!p[13] || p[13] == ' '))
+                return;
+    /* a volatile key lasts as long as the session's Wine server */
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\WinCraft\\Session", 0, NULL, REG_OPTION_VOLATILE,
+                        KEY_READ, NULL, &key, &made))
+        return;
+    RegCloseKey(key);
+    if (made != REG_CREATED_NEW_KEY)
+        return;
+    GetSystemDirectoryW(cmd, MAX_PATH);
+    lstrcatW(cmd, L"\\wineboot.exe");
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    if (CreateProcessW(cmd, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
 /* Icons of programs that ended without removing them. */
 static void tray_prune(void)
 {
@@ -3652,6 +3688,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     ShowWindow(g_bar, SW_SHOWNOACTIVATE);
     tray_start(inst);
+    autostart();
     autohide_later();
     write_wm_prefs();
     CloseHandle(CreateThread(NULL, 0, watch_prefs, NULL, 0, NULL));

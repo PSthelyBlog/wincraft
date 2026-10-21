@@ -193,6 +193,13 @@ Change them yourself; the WinCraft Agent is not needed.
   gives the keyboard only to a program's visible windows). Wine's own
   floating tray window is turned off (`Software\Wine\Explorer`,
   `ShowSystray` dword 0). There is nothing to set.
+- Programs set to start with Windows start at each login, after the taskbar:
+  the `Run` and `RunOnce` values under `Software\Microsoft\Windows\CurrentVersion`
+  (in `HKEY_CURRENT_USER` and `HKEY_LOCAL_MACHINE`) and the shortcuts in the
+  Startup folders. Wine's `wineboot` runs them, once per session. To stop
+  one, use the program's own option ("start with Windows") or remove its
+  value with Registry Editor: `set_registry_value` refuses the `Run` keys.
+  The boot menu's *without your features* entry starts none of them.
 - Alt+Tab switches windows: the window in front first, then the others, most
   recently used first and minimized ones last. Tab moves on, Shift+Tab back,
   releasing Alt switches, Esc cancels. There is nothing to set.
