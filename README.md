@@ -63,7 +63,7 @@ projects that already do the hard parts, and writes everything in between:
 | Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs), with Wine Mono for .NET programs | binary packages, plus the fixes in `wine/patches` |
 | Display | X.Org server, Mesa (software OpenGL) | binary packages |
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
-| **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
+| **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area, moving and sizing, snapping. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
 | **Shell** | `wcshell.exe`: desktop, taskbar, Start menu with search, Run, *Download a Program*, installer front end. A native Win32 program | **written for WinCraft** (`src/shell`) |
 | **Assistant and Agent** | `wcagent.exe`: *WinCraft Assistant*, a chat about WinCraft and this computer with the AI model you choose, and *WinCraft Agent*, which builds features for this computer in a sandbox. A native Win32 program | **written for WinCraft** (`src/agent`) |
 | **Boot, install, build** | early userspace, live/installed boot, disk installer, image assembler | **written for WinCraft** |
@@ -86,10 +86,13 @@ Verified in QEMU, booting the ISO, unless noted:
 - Boot via Limine on **BIOS** and on **UEFI** (OVMF), to the desktop.
 - Desktop shell: Start menu with type-to-search, taskbar with running
   windows, minimise / maximise / restore, drag, Run dialog (Win+R), context
-  menus, Windows key, clock, Alt+Tab, programs' notification-area icons
-  (with their tooltips, balloons and menus, for 32- and 64-bit programs) in
-  the taskbar beside the clock. Programs set to start with Windows (the Run
-  keys and the Startup folder) start at login, once the taskbar is there.
+  menus, Windows key, clock, Alt+Tab, window snapping (a window dragged to
+  the left or right edge of the screen fills that half, to the top edge it
+  is maximised; Win+Left, Win+Right, Win+Up and Win+Down do the same),
+  programs' notification-area icons (with their tooltips, balloons and
+  menus, for 32- and 64-bit programs) in the taskbar beside the clock.
+  Programs set to start with Windows (the Run keys and the Startup folder)
+  start at login, once the taskbar is there.
   A program that installs several shortcuts in its own folder gets one
   folder entry in the Start menu, which opens in place; search still finds
   what is inside.

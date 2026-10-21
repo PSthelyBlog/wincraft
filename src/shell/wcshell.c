@@ -2647,7 +2647,8 @@ static void tap_ctrl(void)
 
 /* A lone press of the Windows key opens the Start menu; Alt+Tab switches
  * windows. The hook only decides and leaves the work to the taskbar, so as
- * not to hold up the keyboard. */
+ * not to hold up the keyboard. Windows+arrow keys snap windows: the window
+ * manager sees them for itself, and the program must not. */
 static LRESULT CALLBACK kbd_hook(int code, WPARAM wp, LPARAM lp)
 {
     static BOOL win_down, combo, alt_down, shift_down, switching;
@@ -2683,6 +2684,10 @@ static LRESULT CALLBACK kbd_hook(int code, WPARAM wp, LPARAM lp)
                     PostMessageW(g_bar, WM_SWITCHER, SWITCH_CANCEL, 0);
                 }
                 return 1;
+            } else if (win_down && (k->vkCode == VK_LEFT || k->vkCode == VK_RIGHT ||
+                                    k->vkCode == VK_UP || k->vkCode == VK_DOWN)) {
+                combo = TRUE;
+                return 1;                   /* the window manager snaps the window */
             }
         }
 

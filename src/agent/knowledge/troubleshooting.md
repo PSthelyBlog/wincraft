@@ -203,6 +203,16 @@ Change them yourself; the WinCraft Agent is not needed.
 - Alt+Tab switches windows: the window in front first, then the others, most
   recently used first and minimized ones last. Tab moves on, Shift+Tab back,
   releasing Alt switches, Esc cancels. There is nothing to set.
+- Window snapping: dragging a window by its title bar to the left or right
+  edge of the screen makes it fill that half of the screen above the
+  taskbar, to the top edge maximizes it; an outline shows where it will go
+  before the button is released, and Esc during the drag cancels it.
+  Dragging a snapped window away gives it back its earlier size.
+  Windows+Left and Windows+Right snap the active window to that half
+  (pressed the other way, a snapped window goes back to its earlier size and
+  place), Windows+Up maximizes it, Windows+Down restores a maximized or
+  snapped window, or else minimizes it. Windows that cannot be resized do
+  not snap. There is nothing to set: it cannot be turned off.
 - WinCraft's defaults, to put things back: `Wallpaper` empty, `Background`
   `11 21 48`, `ActiveWindowTracking` dword 0; every other value above is not
   set, so delete it. Deleting `AccentColor` brings back WinCraft's own blue.

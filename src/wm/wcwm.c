@@ -12,6 +12,10 @@
  *     Windows' ActiveWindowTracking is on; new windows take the focus)
  *   - minimising (ICCCM iconify) and restoring
  *   - the work area: maximised windows stop above the taskbar
+ *   - moving and sizing with the mouse once the program hands it over, and
+ *     snapping: a window dragged to the left or right edge of the screen
+ *     fills that half of the work area, to the top edge it is maximised;
+ *     Windows+Left/Right/Up/Down do the same from the keyboard
  *
  * It speaks just enough ICCCM/EWMH for the Windows runtime to run in its
  * normal "managed" mode. The WinCraft shell's own desktop and taskbar are
@@ -34,6 +38,8 @@
 #include <X11/Xatom.h>
 #include <X11/Xproto.h>
 #include <X11/cursorfont.h>
+#include <X11/keysym.h>
+#include <X11/extensions/XInput2.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -53,7 +59,21 @@ struct client {
     int tray;                   /* the runtime's notification-area window */
     int has_saved;              /* geometry to return to when restored */
     int saved_x, saved_y, saved_w, saved_h;
+    int functions;              /* what the program allows: MWM_FUNC_* */
+    int snapped;                /* SNAP_LEFT or SNAP_RIGHT: it fills that half of the work area */
+    int snap_x, snap_y, snap_w, snap_h;     /* where it was before */
 };
+
+/* Wine says in _MOTIF_WM_HINTS whether a window can be resized, minimised
+ * and maximised. */
+#define MWM_HINTS_FUNCTIONS 1
+#define MWM_FUNC_ALL        1
+#define MWM_FUNC_RESIZE     2
+#define MWM_FUNC_MOVE       4
+#define MWM_FUNC_MINIMIZE   8
+#define MWM_FUNC_MAXIMIZE   16
+
+enum { SNAP_NONE, SNAP_LEFT, SNAP_RIGHT, SNAP_MAXIMIZE };
 
 enum {
     WM_PROTOCOLS, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE,
@@ -61,7 +81,8 @@ enum {
     NET_WORKAREA, NET_WM_STATE, NET_WM_STATE_FULLSCREEN, NET_WM_STATE_ABOVE,
     NET_WM_STATE_MAXIMIZED_VERT, NET_WM_STATE_MAXIMIZED_HORZ,
     NET_CLIENT_LIST, NET_NUMBER_OF_DESKTOPS, NET_CURRENT_DESKTOP,
-    NET_DESKTOP_GEOMETRY, NET_DESKTOP_VIEWPORT, NET_WM_USER_TIME, UTF8_STRING,
+    NET_DESKTOP_GEOMETRY, NET_DESKTOP_VIEWPORT, NET_WM_USER_TIME, NET_WM_MOVERESIZE,
+    MOTIF_WM_HINTS, UTF8_STRING,
     NATOMS
 };
 
@@ -71,7 +92,8 @@ static const char *atom_names[NATOMS] = {
     "_NET_WORKAREA", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_ABOVE",
     "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ",
     "_NET_CLIENT_LIST", "_NET_NUMBER_OF_DESKTOPS", "_NET_CURRENT_DESKTOP",
-    "_NET_DESKTOP_GEOMETRY", "_NET_DESKTOP_VIEWPORT", "_NET_WM_USER_TIME", "UTF8_STRING",
+    "_NET_DESKTOP_GEOMETRY", "_NET_DESKTOP_VIEWPORT", "_NET_WM_USER_TIME", "_NET_WM_MOVERESIZE",
+    "_MOTIF_WM_HINTS", "UTF8_STRING",
 };
 
 static Display *dpy;
@@ -94,6 +116,32 @@ static struct client *pending_focus;
 static long pending_due;
 static int screen_w, screen_h;
 static int other_wm;
+
+/* A move or resize in progress (see on_moveresize), in one of the
+ * _NET_WM_MOVERESIZE directions. */
+enum {
+    MR_SIZE_TOPLEFT, MR_SIZE_TOP, MR_SIZE_TOPRIGHT, MR_SIZE_RIGHT, MR_SIZE_BOTTOMRIGHT,
+    MR_SIZE_BOTTOM, MR_SIZE_BOTTOMLEFT, MR_SIZE_LEFT, MR_MOVE, MR_SIZE_KEYBOARD,
+    MR_MOVE_KEYBOARD, MR_CANCEL
+};
+static struct {
+    struct client *c;
+    int dir, button;            /* the mouse button held, 1 to 3, or 0 for none */
+    int moving;                 /* the pointer went past the drag threshold */
+    int px, py;                 /* the pointer where it started */
+    int ox, oy, ow, oh;         /* the window where it started, for Esc */
+    int snapped;                /* and the half it was snapped to */
+    int x, y, w, h;             /* what the pointer's moves apply to */
+    int cur_x, cur_y, cur_w, cur_h;
+    int from_x, from_y, from_w, from_h;     /* where a snap goes back to */
+    int min_w, min_h;           /* the smallest size the program accepted */
+    int hedge, vedge;           /* keyboard sizing: the edges that move, -1 or 1 */
+    int zone;                   /* SNAP_* where the pointer is */
+} drag;
+static Window outline[8];          /* the snap outline, dark bars then light */
+static int xi_opcode = -1;
+static void end_drag(int cancel);
+static void on_moveresize(struct client *c, XClientMessageEvent *e);
 
 /* ---------------------------------------------------------------- utils */
 
@@ -397,6 +445,24 @@ static void read_hints(struct client *c)
     XGetTransientForHint(dpy, c->win, &c->transient_for);
 }
 
+static void read_functions(struct client *c)
+{
+    Atom type;
+    int format;
+    unsigned long count = 0, remaining;
+    unsigned char *data = NULL;
+
+    c->functions = MWM_FUNC_RESIZE | MWM_FUNC_MOVE | MWM_FUNC_MINIMIZE | MWM_FUNC_MAXIMIZE;
+    if (XGetWindowProperty(dpy, c->win, atoms[MOTIF_WM_HINTS], 0, 5, False, AnyPropertyType, &type,
+                           &format, &count, &remaining, &data) == Success && data) {
+        const long *hints = (const long *)data;
+
+        if (format == 32 && count >= 2 && (hints[0] & MWM_HINTS_FUNCTIONS))
+            c->functions = (hints[1] & MWM_FUNC_ALL) ? c->functions & ~hints[1] : hints[1];
+        XFree(data);
+    }
+}
+
 static void read_net_state(struct client *c)
 {
     Atom type, *states = NULL;
@@ -456,6 +522,79 @@ static void apply_state_geometry(struct client *c)
     }
 }
 
+/*
+ * Maximising and restoring here rather than at the program's request: Wine
+ * follows the window's state, and a window restored this way goes back to
+ * where it is at that moment. So the state changes before the move when
+ * maximising, after it when restoring.
+ */
+static void maximize(struct client *c)
+{
+    c->maximized = 1;
+    write_net_state(c);
+    apply_state_geometry(c);
+}
+
+static void restore(struct client *c)
+{
+    c->maximized = 0;
+    apply_state_geometry(c);
+    write_net_state(c);
+}
+
+/* The half of the work area a snapped window fills. */
+static void half_area(int side, int *x, int *y, int *w, int *h)
+{
+    int left = screen_w / 2;
+
+    *x = side == SNAP_LEFT ? 0 : left;
+    *w = side == SNAP_LEFT ? left : screen_w - left;
+    *y = AREA_Y;
+    *h = screen_h - taskbar_height;
+}
+
+/* Whether a window still fills the half it was snapped to: moved or sized
+ * since, it no longer counts as snapped. */
+static int still_snapped(struct client *c)
+{
+    XWindowAttributes wa;
+    int x, y, w, h;
+
+    if (c->snapped && !c->maximized) {
+        half_area(c->snapped, &x, &y, &w, &h);
+        if (!XGetWindowAttributes(dpy, c->win, &wa) ||
+            wa.x != x || wa.y != y || wa.width != w || wa.height != h)
+            c->snapped = 0;
+    }
+    return c->snapped;
+}
+
+/* Snap a window to one half of the work area. Where it was before (x, y, w,
+ * h) is kept for going back, unless it was snapped already. */
+static void snap(struct client *c, int side, int x, int y, int w, int h)
+{
+    if (!still_snapped(c)) {
+        c->snap_x = x;
+        c->snap_y = y;
+        c->snap_w = w;
+        c->snap_h = h;
+    }
+    c->snapped = side;
+    half_area(side, &x, &y, &w, &h);
+    XMoveResizeWindow(dpy, c->win, x, y, w, h);
+    if (c->maximized) {
+        c->maximized = 0;
+        c->has_saved = 0;
+        write_net_state(c);
+    }
+}
+
+static void unsnap(struct client *c)
+{
+    c->snapped = 0;
+    XMoveResizeWindow(dpy, c->win, c->snap_x, c->snap_y, c->snap_w, c->snap_h);
+}
+
 static struct client *manage(Window win)
 {
     struct client *c = calloc(1, sizeof(*c));
@@ -470,6 +609,7 @@ static struct client *manage(Window win)
     XGrabButton(dpy, AnyButton, AnyModifier, win, False, ButtonPressMask,
                 GrabModeSync, GrabModeAsync, None, None);
     read_hints(c);
+    read_functions(c);
     read_net_state(c);
     update_client_list();
     return c;
@@ -480,6 +620,10 @@ static void unmanage(struct client *c)
     struct client **p;
     int was_focused = c == focused;
 
+    if (drag.c == c) {
+        drag.c = NULL;
+        end_drag(0);
+    }
     for (p = &clients; *p; p = &(*p)->next)
         if (*p == c) {
             *p = c->next;
@@ -687,6 +831,17 @@ static void on_configure_request(XConfigureRequestEvent *e)
                       (mask & CWHeight) ? e->height : wa.height);
             return;
         }
+        if (c == drag.c) {
+            /* sizing it smaller than the program will go: that is its minimum */
+            if (drag.dir != MR_MOVE && drag.dir != MR_MOVE_KEYBOARD) {
+                if ((mask & CWWidth) && e->width > drag.cur_w) drag.min_w = e->width;
+                if ((mask & CWHeight) && e->height > drag.cur_h) drag.min_h = e->height;
+            }
+            if (mask & CWX) drag.cur_x = e->x;
+            if (mask & CWY) drag.cur_y = e->y;
+            if (mask & CWWidth) drag.cur_w = e->width;
+            if (mask & CWHeight) drag.cur_h = e->height;
+        }
         if (((mask & CWX) && e->x != wa.x) || ((mask & CWY) && e->y != wa.y) ||
             ((mask & CWWidth) && e->width != wa.width) ||
             ((mask & CWHeight) && e->height != wa.height) ||
@@ -756,6 +911,8 @@ static void on_client_message(XClientMessageEvent *e)
         apply_state_geometry(c);
         write_net_state(c);
         restack();
+    } else if (e->message_type == atoms[NET_WM_MOVERESIZE]) {
+        on_moveresize(c, e);
     }
 }
 
@@ -779,6 +936,388 @@ static void on_property(XPropertyEvent *e)
     if (e->atom == XA_WM_HINTS || e->atom == atoms[WM_PROTOCOLS] ||
         e->atom == XA_WM_TRANSIENT_FOR)
         read_hints(c);
+    else if (e->atom == atoms[MOTIF_WM_HINTS])
+        read_functions(c);
+}
+
+/* -------------------------------------------------------- move and size */
+
+/*
+ * Wine hands title-bar and border drags over to the window manager with
+ * _NET_WM_MOVERESIZE, as on any Linux desktop, and waits for the mouse
+ * button to come up. A move that ends with the pointer on the left or right
+ * edge of the screen snaps the window to that half of the work area; on the
+ * top edge, it maximises the window. An outline shows where it will go. The
+ * window menu's Move and Size, done with the keyboard, come here too.
+ */
+#define DRAG_THRESHOLD  4       /* pixels the pointer moves before a press becomes a drag */
+#define KEY_STEP        8       /* pixels per arrow key, moving or sizing with the keyboard */
+#define TITLE_KEEP      32      /* pixels of a moved window kept above the taskbar */
+#define OUTLINE_WIDTH   6
+#define OUTLINE_INSET   8       /* from the edges of the area the window will fill */
+
+static int drag_keyboard(void)
+{
+    return drag.dir == MR_SIZE_KEYBOARD || drag.dir == MR_MOVE_KEYBOARD;
+}
+
+/* The outline: a dark frame round a light one, as bars (nothing here draws
+ * translucently). */
+static void show_outline(int zone)
+{
+    static const char *colors[2] = { "#14284d", "#dce8ff" };
+    int x, y, w, h, i, t = OUTLINE_WIDTH;
+
+    if (zone == SNAP_NONE) {
+        for (i = 0; i < 8; i++)
+            if (outline[i])
+                XUnmapWindow(dpy, outline[i]);
+        return;
+    }
+    if (!outline[0]) {
+        XSetWindowAttributes swa;
+        XColor color, exact;
+        Colormap cmap = DefaultColormap(dpy, DefaultScreen(dpy));
+
+        swa.override_redirect = True;
+        for (i = 0; i < 8; i++) {
+            swa.background_pixel = i < 4 ? BlackPixel(dpy, DefaultScreen(dpy)) : WhitePixel(dpy, DefaultScreen(dpy));
+            if (XAllocNamedColor(dpy, cmap, colors[i / 4], &color, &exact))
+                swa.background_pixel = color.pixel;
+            outline[i] = XCreateWindow(dpy, root, 0, 0, 1, 1, 0, CopyFromParent, InputOutput,
+                                       CopyFromParent, CWOverrideRedirect | CWBackPixel, &swa);
+        }
+    }
+    if (zone == SNAP_MAXIMIZE) {
+        x = 0;
+        y = AREA_Y;
+        w = screen_w;
+        h = screen_h - taskbar_height;
+    } else {
+        half_area(zone, &x, &y, &w, &h);
+    }
+    x += OUTLINE_INSET;
+    y += OUTLINE_INSET;
+    w -= 2 * OUTLINE_INSET;
+    h -= 2 * OUTLINE_INSET;
+    /* the dark bars, then the light ones a pixel inside them */
+    for (i = 0; i < 8; i += 4, x++, y++, w -= 2, h -= 2, t -= 2) {
+        XMoveResizeWindow(dpy, outline[i], x, y, w, t);
+        XMoveResizeWindow(dpy, outline[i + 1], x, y + h - t, w, t);
+        XMoveResizeWindow(dpy, outline[i + 2], x, y, t, h);
+        XMoveResizeWindow(dpy, outline[i + 3], x + w - t, y, t, h);
+    }
+    for (i = 0; i < 8; i++)
+        XMapRaised(dpy, outline[i]);
+}
+
+/* Which snap the pointer's place on the screen's edges calls for. */
+static int zone_at(struct client *c, int px, int py)
+{
+    if (px <= 0 && (c->functions & MWM_FUNC_RESIZE))
+        return SNAP_LEFT;
+    if (px >= screen_w - 1 && (c->functions & MWM_FUNC_RESIZE))
+        return SNAP_RIGHT;
+    if (py <= 0 && (c->functions & MWM_FUNC_MAXIMIZE))
+        return SNAP_MAXIMIZE;
+    return SNAP_NONE;
+}
+
+static void drag_to(int x, int y, int w, int h)
+{
+    if (w < drag.min_w) w = drag.min_w;
+    if (h < drag.min_h) h = drag.min_h;
+    /* a moved window's title bar stays within reach: not above the work
+     * area, nor behind a taskbar at the bottom */
+    if (drag.dir == MR_MOVE || drag.dir == MR_MOVE_KEYBOARD) {
+        if (y > AREA_Y + screen_h - taskbar_height - TITLE_KEEP)
+            y = AREA_Y + screen_h - taskbar_height - TITLE_KEEP;
+        if (y < AREA_Y)
+            y = AREA_Y;
+    }
+    if (x == drag.cur_x && y == drag.cur_y && w == drag.cur_w && h == drag.cur_h)
+        return;
+    drag.cur_x = x;
+    drag.cur_y = y;
+    drag.cur_w = w;
+    drag.cur_h = h;
+    XMoveResizeWindow(dpy, drag.c->win, x, y, w, h);
+}
+
+static void on_moveresize(struct client *c, XClientMessageEvent *e)
+{
+    static Cursor cursors[MR_CANCEL];
+    static const unsigned int shapes[MR_CANCEL] = {
+        XC_top_left_corner, XC_top_side, XC_top_right_corner, XC_right_side,
+        XC_bottom_right_corner, XC_bottom_side, XC_bottom_left_corner, XC_left_side,
+        XC_left_ptr, XC_fleur, XC_fleur,
+    };
+    long dir = e->data.l[2], button = e->data.l[3];
+    unsigned int mask, held = Button1Mask | Button2Mask | Button3Mask;
+    XWindowAttributes wa;
+    XSizeHints hints;
+    Window r, child;
+    int wx, wy, moving = dir == MR_MOVE || dir == MR_MOVE_KEYBOARD;
+    long supplied;
+
+    if (dir == MR_CANCEL) {
+        if (drag.c == c)
+            end_drag(1);
+        return;
+    }
+    if (drag.c || dir < 0 || dir > MR_MOVE_KEYBOARD || c->iconic || c->maximized ||
+        c->fullscreen || c->tray || !(c->functions & (moving ? MWM_FUNC_MOVE : MWM_FUNC_RESIZE)) ||
+        !XGetWindowAttributes(dpy, c->win, &wa) ||
+        !XQueryPointer(dpy, root, &r, &child, &drag.px, &drag.py, &wx, &wy, &mask))
+        return;
+    if (button >= 1 && button <= 3)
+        held = Button1Mask << (button - 1);
+    if (dir != MR_SIZE_KEYBOARD && dir != MR_MOVE_KEYBOARD && !(mask & held))
+        return;                 /* the button is up already: that was a click */
+    if (!cursors[dir])
+        cursors[dir] = XCreateFontCursor(dpy, shapes[dir]);
+    if (XGrabPointer(dpy, root, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                     GrabModeAsync, GrabModeAsync, None, cursors[dir], CurrentTime) != GrabSuccess)
+        return;
+    XGrabKeyboard(dpy, root, False, GrabModeAsync, GrabModeAsync, CurrentTime);
+    drag.c = c;
+    drag.dir = dir;
+    drag.button = button;
+    drag.moving = drag_keyboard();
+    drag.ox = drag.x = drag.cur_x = drag.from_x = wa.x;
+    drag.oy = drag.y = drag.cur_y = drag.from_y = wa.y;
+    drag.ow = drag.w = drag.cur_w = drag.from_w = wa.width;
+    drag.oh = drag.h = drag.cur_h = drag.from_h = wa.height;
+    drag.snapped = dir == MR_MOVE ? still_snapped(c) : SNAP_NONE;
+    drag.min_w = drag.min_h = 32;
+    if (XGetWMNormalHints(dpy, c->win, &hints, &supplied) && (hints.flags & PMinSize)) {
+        drag.min_w = hints.min_width;
+        drag.min_h = hints.min_height;
+    }
+    drag.hedge = drag.vedge = 0;
+    drag.zone = SNAP_NONE;
+}
+
+static void on_drag_motion(int px, int py)
+{
+    struct client *c = drag.c;
+    int dx = px - drag.px, dy = py - drag.py, d = drag.dir, zone;
+    int x = drag.x, y = drag.y, w = drag.w, h = drag.h;
+    int left = d == MR_SIZE_TOPLEFT || d == MR_SIZE_LEFT || d == MR_SIZE_BOTTOMLEFT;
+    int right = d == MR_SIZE_TOPRIGHT || d == MR_SIZE_RIGHT || d == MR_SIZE_BOTTOMRIGHT;
+    int top = d == MR_SIZE_TOPLEFT || d == MR_SIZE_TOP || d == MR_SIZE_TOPRIGHT;
+    int bottom = d == MR_SIZE_BOTTOMLEFT || d == MR_SIZE_BOTTOM || d == MR_SIZE_BOTTOMRIGHT;
+
+    if (d == MR_SIZE_KEYBOARD)
+        return;
+    if (!drag.moving) {
+        if (abs(dx) < DRAG_THRESHOLD && abs(dy) < DRAG_THRESHOLD)
+            return;
+        drag.moving = 1;
+        /* a snapped window comes away at the size it had before, under the pointer */
+        if (drag.snapped) {
+            c->snapped = SNAP_NONE;
+            x = drag.x = drag.px - (int)((long)(drag.px - drag.x) * c->snap_w / drag.w);
+            w = drag.w = drag.from_w = c->snap_w;
+            h = drag.h = drag.from_h = c->snap_h;
+            drag.from_x = c->snap_x;
+            drag.from_y = c->snap_y;
+        }
+    }
+    if (d == MR_MOVE || d == MR_MOVE_KEYBOARD) {
+        x += dx;
+        y += dy;
+    } else {
+        if (left) w -= dx;
+        if (right) w += dx;
+        if (top) h -= dy;
+        if (bottom) h += dy;
+        if (w < drag.min_w) w = drag.min_w;
+        if (h < drag.min_h) h = drag.min_h;
+        /* the opposite edges stay put */
+        if (left) x += drag.w - w;
+        if (top) y += drag.h - h;
+    }
+    drag_to(x, y, w, h);
+    if (d == MR_MOVE && (zone = zone_at(c, px, py)) != drag.zone) {
+        drag.zone = zone;
+        show_outline(zone);
+    }
+}
+
+/* Arrow keys move the window, or move the edges sizing it: as on Windows, the
+ * first arrow picks the edge. Enter keeps the result, Esc undoes it. */
+static void on_drag_key(XKeyEvent *e)
+{
+    KeySym key = XLookupKeysym(e, 0);
+    int dx = 0, dy = 0, x = drag.cur_x, y = drag.cur_y, w = drag.cur_w, h = drag.cur_h;
+
+    switch (key) {
+    case XK_Escape:   end_drag(1); return;
+    case XK_Return:
+    case XK_KP_Enter: end_drag(0); return;
+    case XK_Left:  case XK_KP_Left:  dx = -KEY_STEP; break;
+    case XK_Right: case XK_KP_Right: dx = KEY_STEP; break;
+    case XK_Up:    case XK_KP_Up:    dy = -KEY_STEP; break;
+    case XK_Down:  case XK_KP_Down:  dy = KEY_STEP; break;
+    default: return;
+    }
+    if (drag.dir == MR_MOVE_KEYBOARD) {
+        drag.x += dx;
+        drag.y += dy;
+        drag_to(x + dx, y + dy, w, h);
+    } else if (drag.dir == MR_SIZE_KEYBOARD) {
+        if (dx && !drag.hedge) drag.hedge = dx < 0 ? -1 : 1;
+        if (dy && !drag.vedge) drag.vedge = dy < 0 ? -1 : 1;
+        if (drag.hedge < 0) {
+            w = w - dx < drag.min_w ? drag.min_w : w - dx;
+            x = drag.cur_x + drag.cur_w - w;
+        } else if (drag.hedge > 0) {
+            w += dx;
+        }
+        if (drag.vedge < 0) {
+            h = h - dy < drag.min_h ? drag.min_h : h - dy;
+            y = drag.cur_y + drag.cur_h - h;
+        } else if (drag.vedge > 0) {
+            h += dy;
+        }
+        drag_to(x, y, w, h);
+    }
+}
+
+static void on_drag_button(XButtonEvent *e)
+{
+    if (drag_keyboard()) {
+        if (e->type == ButtonPress)
+            end_drag(0);                /* a click ends it, as Enter does */
+    } else if (e->type == ButtonRelease && (drag.button < 1 || drag.button > 3 ||
+                                            e->button == (unsigned int)drag.button)) {
+        on_drag_motion(e->x_root, e->y_root);
+        end_drag(0);
+    }
+}
+
+static void end_drag(int cancel)
+{
+    struct client *c = drag.c;
+    int zone = drag.zone;
+
+    drag.c = NULL;
+    drag.zone = SNAP_NONE;
+    show_outline(SNAP_NONE);
+    XUngrabPointer(dpy, CurrentTime);
+    XUngrabKeyboard(dpy, CurrentTime);
+    if (!c)
+        return;
+    if (cancel) {
+        XMoveResizeWindow(dpy, c->win, drag.ox, drag.oy, drag.ow, drag.oh);
+        c->snapped = drag.snapped;
+    } else if (zone == SNAP_MAXIMIZE) {
+        maximize(c);
+    } else if (zone != SNAP_NONE) {
+        snap(c, zone, drag.from_x, drag.from_y, drag.from_w, drag.from_h);
+    }
+}
+
+/* ------------------------------------------------------------ snap keys */
+
+/*
+ * Windows+Left and Windows+Right snap the active window to that half of the
+ * work area (the other way, a snapped window goes back to where it was);
+ * Windows+Up maximises it; Windows+Down restores a maximised or snapped
+ * window, or else minimises it. The keys are seen raw, as they go to the
+ * program; the shell keeps them from it.
+ */
+static KeyCode key_left, key_right, key_up, key_down;
+
+static void setup_keys(void)
+{
+    unsigned char bits[XIMaskLen(XI_LASTEVENT)];
+    XIEventMask mask;
+    int event, error, major = 2, minor = 2;
+
+    if (!XQueryExtension(dpy, "XInputExtension", &xi_opcode, &event, &error) ||
+        XIQueryVersion(dpy, &major, &minor) != Success) {
+        xi_opcode = -1;
+        return;
+    }
+    key_left = XKeysymToKeycode(dpy, XK_Left);
+    key_right = XKeysymToKeycode(dpy, XK_Right);
+    key_up = XKeysymToKeycode(dpy, XK_Up);
+    key_down = XKeysymToKeycode(dpy, XK_Down);
+    memset(bits, 0, sizeof(bits));
+    XISetMask(bits, XI_RawKeyPress);
+    XISetMask(bits, XI_RawKeyRelease);
+    mask.deviceid = XIAllMasterDevices;
+    mask.mask_len = sizeof(bits);
+    mask.mask = bits;
+    XISelectEvents(dpy, root, &mask, 1);
+}
+
+static void snap_key(KeyCode key)
+{
+    struct client *c = focused;
+    XWindowAttributes wa;
+    int side = key == key_left ? SNAP_LEFT : SNAP_RIGHT, area_h = screen_h - taskbar_height;
+
+    if (!c || drag.c || c->iconic || c->fullscreen || c->tray || is_shell_window(c->win, NULL) ||
+        !XGetWindowAttributes(dpy, c->win, &wa))
+        return;
+    if (key == key_up) {
+        if (!c->maximized && (c->functions & MWM_FUNC_MAXIMIZE))
+            maximize(c);
+    } else if (key == key_down) {
+        if (c->maximized) {
+            /* one that was maximised from the start has no other size here yet */
+            if (!c->has_saved || (c->saved_w >= screen_w && c->saved_h >= area_h)) {
+                c->has_saved = 1;
+                c->saved_w = screen_w * 3 / 4;
+                c->saved_h = area_h * 3 / 4;
+                c->saved_x = (screen_w - c->saved_w) / 2;
+                c->saved_y = AREA_Y + (area_h - c->saved_h) / 2;
+            }
+            restore(c);
+        } else if (still_snapped(c)) {
+            unsnap(c);
+        } else if (c->functions & MWM_FUNC_MINIMIZE) {
+            iconify(c);
+        }
+    } else if (!(c->functions & MWM_FUNC_RESIZE)) {
+        return;
+    } else if (c->maximized) {
+        if (c->has_saved)
+            snap(c, side, c->saved_x, c->saved_y, c->saved_w, c->saved_h);
+        else
+            snap(c, side, wa.x, wa.y, wa.width, wa.height);
+    } else if (!still_snapped(c)) {
+        snap(c, side, wa.x, wa.y, wa.width, wa.height);
+    } else if (c->snapped != side) {
+        unsnap(c);
+    }
+}
+
+static void on_raw_key(XGenericEventCookie *cookie)
+{
+    static unsigned char down[256];
+    XIRawEvent *e = cookie->data;
+    Window r, child;
+    int x, y, wx, wy;
+    unsigned int mask;
+
+    if (e->detail < 0 || e->detail > 255)
+        return;
+    if (cookie->evtype == XI_RawKeyRelease) {
+        down[e->detail] = 0;
+        return;
+    }
+    if (down[e->detail])        /* held down: it is repeating */
+        return;
+    down[e->detail] = 1;
+    if ((e->detail == key_left || e->detail == key_right || e->detail == key_up ||
+         e->detail == key_down) &&
+        XQueryPointer(dpy, root, &r, &child, &x, &y, &wx, &wy, &mask) &&
+        (mask & Mod4Mask) && !(mask & (ShiftMask | ControlMask | Mod1Mask)))
+        snap_key(e->detail);
 }
 
 /* --------------------------------------------------------- preferences */
@@ -836,12 +1375,16 @@ static void check_prefs(void)
     if (height != taskbar_height || new_top != taskbar_top) {
         XWindowAttributes wa;
 
+        for (c = clients; c; c = c->next)
+            still_snapped(c);               /* to the old work area */
         taskbar_height = height;
         taskbar_top = new_top;
         update_workarea();
         for (c = clients; c; c = c->next)
             if (c->maximized)
                 apply_state_geometry(c);
+            else if (c->snapped)
+                snap(c, c->snapped, c->snap_x, c->snap_y, c->snap_w, c->snap_h);
             else if (c->tray && XGetWindowAttributes(dpy, c->win, &wa))
                 dock_tray(c, wa.width, wa.height);
     }
@@ -905,7 +1448,7 @@ static void focus_pending(void)
     int rx, ry, wx, wy;
     unsigned int mask;
 
-    if (!c || now_ms() < pending_due)
+    if (!c || drag.c || now_ms() < pending_due)      /* not while dragging: after it */
         return;
     pending_focus = NULL;
     if (popup_has_focus())
@@ -924,7 +1467,7 @@ static void setup(void)
         NET_WORKAREA, NET_WM_STATE, NET_WM_STATE_FULLSCREEN, NET_WM_STATE_ABOVE,
         NET_WM_STATE_MAXIMIZED_VERT, NET_WM_STATE_MAXIMIZED_HORZ,
         NET_CLIENT_LIST, NET_NUMBER_OF_DESKTOPS, NET_CURRENT_DESKTOP,
-        NET_DESKTOP_GEOMETRY, NET_DESKTOP_VIEWPORT,
+        NET_DESKTOP_GEOMETRY, NET_DESKTOP_VIEWPORT, NET_WM_MOVERESIZE,
     };
     Atom list[sizeof(supported) / sizeof(supported[0])];
     Window dummy, *children = NULL, none = None;
@@ -1007,6 +1550,7 @@ int main(int argc, char **argv)
         return 1;
     }
     setup();
+    setup_keys();
     check_prefs();
 
     for (;;) {
@@ -1038,8 +1582,35 @@ int main(int argc, char **argv)
         case UnmapNotify:      on_unmap(&ev.xunmap); break;
         case ConfigureRequest: on_configure_request(&ev.xconfigurerequest); break;
         case ClientMessage:    on_client_message(&ev.xclient); break;
-        case ButtonPress:      on_button_press(&ev.xbutton); break;
         case PropertyNotify:   on_property(&ev.xproperty); break;
+        case ButtonPress:
+            if (drag.c)
+                on_drag_button(&ev.xbutton);
+            else
+                on_button_press(&ev.xbutton);
+            break;
+        case ButtonRelease:
+            if (drag.c)
+                on_drag_button(&ev.xbutton);
+            break;
+        case MotionNotify:
+            /* only the latest position matters */
+            while (XCheckTypedEvent(dpy, MotionNotify, &ev))
+                ;
+            if (drag.c)
+                on_drag_motion(ev.xmotion.x_root, ev.xmotion.y_root);
+            break;
+        case KeyPress:
+            if (drag.c)
+                on_drag_key(&ev.xkey);
+            break;
+        case GenericEvent:
+            if (ev.xcookie.extension == xi_opcode && XGetEventData(dpy, &ev.xcookie)) {
+                if (ev.xcookie.evtype == XI_RawKeyPress || ev.xcookie.evtype == XI_RawKeyRelease)
+                    on_raw_key(&ev.xcookie);
+                XFreeEventData(dpy, &ev.xcookie);
+            }
+            break;
         case DestroyNotify: {
             struct client *c = find_client(ev.xdestroywindow.window);
 
@@ -1053,12 +1624,16 @@ int main(int argc, char **argv)
             if (ev.xconfigure.window == root) {     /* screen resolution changed */
                 struct client *c;
 
+                for (c = clients; c; c = c->next)
+                    still_snapped(c);       /* to the old screen */
                 screen_w = ev.xconfigure.width;
                 screen_h = ev.xconfigure.height;
                 update_workarea();
                 for (c = clients; c; c = c->next)
                     if (c->fullscreen || c->maximized)
                         apply_state_geometry(c);
+                    else if (c->snapped)
+                        snap(c, c->snapped, c->snap_x, c->snap_y, c->snap_w, c->snap_h);
             }
             break;
         }
