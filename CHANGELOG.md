@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.18 — 2026-10-21
+
+A fix in Wine for programs' menus.
+
+- **A click on a notification icon runs the program's default action
+  again** when the program is not in English. Some programs, such as
+  Ditto, the clipboard manager, mark one item of their menu as the default
+  (shown in bold) and then rename the items for your language. Wine lost
+  the mark while renaming, so a click on their icon did nothing. A fourth
+  fix to Wine, in `wine/patches`, keeps it, as Windows does.
+- Everything else is as in 0.7.17.
+
 ## 0.7.17 — 2026-10-21
 
 Programs' notification-area icons are in the taskbar.
