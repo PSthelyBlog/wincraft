@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.23 — 2026-10-21
+
+Windows snap to quarters of the screen.
+
+- **Corners.** Drag a window by its title bar into a corner of the screen
+  and it fills that quarter, above the taskbar; an outline shows it first,
+  as for the halves. The rest of each side still gives the half, and the
+  top edge still maximises.
+- **Windows+Up and Windows+Down** now move a snapped window a step along
+  its side: top quarter, half, bottom quarter. Up from the top quarter
+  maximises it; down from the bottom quarter puts it back where it was
+  before it was snapped. Windows+Left and Windows+Right move a quarter to
+  the same quarter on the other side.
+- Changed: Windows+Down on a window snapped to a half now takes it to the
+  bottom quarter, as on Windows, instead of straight back; press it again
+  to put the window back.
+- Everything else is as in 0.7.22.
+
 ## 0.7.22 — 2026-10-21
 
 A fix to window snapping.

@@ -35,7 +35,7 @@
 #include <stdio.h>
 #include <wchar.h>
 
-#define WC_VERSION      L"0.7.22"
+#define WC_VERSION      L"0.7.23"
 
 /* ---- metrics ---- */
 #define BAR_H           g_bar_h
