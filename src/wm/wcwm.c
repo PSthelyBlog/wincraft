@@ -953,6 +953,7 @@ static void on_property(XPropertyEvent *e)
 #define DRAG_THRESHOLD  4       /* pixels the pointer moves before a press becomes a drag */
 #define KEY_STEP        8       /* pixels per arrow key, moving or sizing with the keyboard */
 #define TITLE_KEEP      32      /* pixels of a moved window kept above the taskbar */
+#define SNAP_EDGE       8       /* pixels from an edge of the screen that count as on it */
 #define OUTLINE_WIDTH   6
 #define OUTLINE_INSET   8       /* from the edges of the area the window will fill */
 
@@ -1011,14 +1012,17 @@ static void show_outline(int zone)
         XMapRaised(dpy, outline[i]);
 }
 
-/* Which snap the pointer's place on the screen's edges calls for. */
+/* Which snap the pointer's place on the screen's edges calls for. The edges
+ * are SNAP_EDGE pixels wide: in a virtual machine's window the pointer may
+ * stop short of the last pixel (QEMU's own window never reaches the right
+ * and bottom ones), or leave the window before it gets there. */
 static int zone_at(struct client *c, int px, int py)
 {
-    if (px <= 0 && (c->functions & MWM_FUNC_RESIZE))
+    if (px < SNAP_EDGE && (c->functions & MWM_FUNC_RESIZE))
         return SNAP_LEFT;
-    if (px >= screen_w - 1 && (c->functions & MWM_FUNC_RESIZE))
+    if (px >= screen_w - SNAP_EDGE && (c->functions & MWM_FUNC_RESIZE))
         return SNAP_RIGHT;
-    if (py <= 0 && (c->functions & MWM_FUNC_MAXIMIZE))
+    if (py < SNAP_EDGE && (c->functions & MWM_FUNC_MAXIMIZE))
         return SNAP_MAXIMIZE;
     return SNAP_NONE;
 }
