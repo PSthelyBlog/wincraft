@@ -21,7 +21,10 @@ step_kernel() {
         mkdir -p $B/dl/kernel
         local base=https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x
         curl -fL -o $B/dl/kernel/linux-$KVER.tar.xz $base/linux-$KVER.tar.xz
-        curl -fsSL -o $B/dl/kernel/sha256sums.asc $base/sha256sums.asc
+        # the checksums from kernel.org itself: the CDN's copy can lag days
+        # behind a new release
+        curl -fsSL -o $B/dl/kernel/sha256sums.asc \
+            https://www.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/sha256sums.asc
         (cd $B/dl/kernel && grep " linux-$KVER.tar.xz\$" sha256sums.asc | sha256sum -c -)
         tar -C $B -xf $B/dl/kernel/linux-$KVER.tar.xz
     fi
