@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.24 — 2026-10-22
+
+WinCraft Assistant and the WinCraft Agent send far less with each request.
+
+- **An indexed reference.** Each request used to carry all of WinCraft's
+  documentation: the troubleshooting guide, the README, the changelog of
+  every release and the notes on the Wine fixes, about 86 KB, on every
+  round of a chat. Now a chat starts with the working rules and an index of
+  that documentation, and the assistant reads the sections a question
+  needs, each listed in the chat. In tests, a question that sent 35,920
+  tokens on 0.7.23, all at full price, sent 21,406; questions sent 19,000
+  to 46,000 tokens depending on how much they looked up, most of them read
+  from the provider's cache at a tenth of the price. The agent starts from
+  the same index, and a whole feature, built and tested, came to 92,046
+  tokens, 83% of them from the cache.
+- **Better use of the provider's cache.** The unchanging start of each
+  request is shared between chats, and each round of a chat reads the
+  earlier ones from the cache instead of paying for them again.
+- The status line says how many of the tokens sent came from the cache.
+- The WinCraft Agent no longer asks you to type commands to check a
+  feature: it says what you will notice.
+- Everything else is as in 0.7.23.
+
 ## 0.7.23 — 2026-10-21
 
 Windows snap to quarters of the screen.
