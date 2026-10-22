@@ -152,6 +152,10 @@ const tool_def *tool_find(const char *name);
 char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ctx, char **label);
 char *system_snapshot(void);
 /* wcagent.exe /opengl: print the OpenGL renderer and exit (tools.c). */
+/* For a tool that waits long: a line in the status bar, and whether the
+ * person pressed Stop (wcagent.c). */
+void tool_status(const WCHAR *text);
+BOOL tool_stopped(void);
 int opengl_info(void);
 char *knowledge_text(void);
 

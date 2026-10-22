@@ -892,6 +892,16 @@ static void post_status(const WCHAR *s)
     PostMessageW(g_main, WM_APP_STATUS, 0, (LPARAM)_wcsdup(s));
 }
 
+void tool_status(const WCHAR *text)
+{
+    post_status(text);
+}
+
+BOOL tool_stopped(void)
+{
+    return g_stop_event && WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0;
+}
+
 static void update_status(void)
 {
     WCHAR s[512];

@@ -38,3 +38,6 @@ util-linux
 e2fsprogs
 dosfstools
 limine
+
+# -- updates from GitHub (priv.d/update): an https client that checks certificates
+curl

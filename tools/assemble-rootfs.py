@@ -33,6 +33,7 @@ WHOLE = [
     "fontconfig", "ttf-liberation",
     "alsa-lib",
     "dosfstools",
+    "curl",
 ]
 
 # Packages from which only some files are wanted (glob patterns).

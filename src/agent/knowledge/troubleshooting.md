@@ -257,14 +257,42 @@ Change them yourself; the WinCraft Agent is not needed.
 
 ## Live session or installed
 
-<!-- index guide-live-installed: what a live session keeps, Install WinCraft OS erases the whole disk, no update tool -->
+<!-- index guide-live-installed: what a live session keeps, Install WinCraft OS erases the whole disk -->
 
 - The overview says which. Live: started from the ISO or USB, all changes in
   memory, lost at restart. Installed: changes are kept on the data
   partition.
 - *Install WinCraft OS* (desktop icon in a live session) erases the WHOLE
   disk chosen, then makes it bootable on BIOS and UEFI.
-- There is no update tool yet: a new WinCraft release is a new system image.
+- A new WinCraft release is a new system image: an installed system takes it
+  with an update (`guide-updating`), a live session by starting the new ISO.
+
+## Updating WinCraft
+
+<!-- index guide-updating: checking for a newer WinCraft, installing it from GitHub, the Update WinCraft window, going back to the previous version, live sessions and installations before 0.8 -->
+
+- `check_for_update` says which version is in use, the newest release on
+  GitHub with its notes, an update already installed for the next start,
+  and the version kept from before the last update. Check before saying
+  anything about versions.
+- `install_update` (it asks permission) downloads the newest release from
+  github.com/PSthelyBlog/wincraft, about 270 MB, checks it against the
+  SHA-256 published with it, and installs it beside the version in use. It
+  takes a few minutes and starts at the next restart (Start menu, Restart).
+  The version in use is kept as the previous one. Programs, files and
+  features are on the data partition and are not touched.
+- `use_previous_version` (it asks permission) goes back to the kept version
+  from the next restart; the version left is kept in its place. When the
+  kept version is 0.8 or later, the boot menu also offers it as *WinCraft OS
+  (previous version, ...)*, for a version that does not start properly.
+- The person can do the same without the assistant: *Update WinCraft* in the
+  Start menu.
+- A live session (started from the ISO or USB) has nothing to update: a new
+  version is a new ISO to start from. An installation from before 0.8 has no
+  updater: install 0.8 or later once (it erases the disk).
+- The download is trusted as a manual one is: from the project's GitHub
+  account, over HTTPS, matching its published checksum; there is no other
+  signature.
 
 ## Power
 

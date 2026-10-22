@@ -10,6 +10,7 @@
  *   wcshell.exe /download   "Download a Program": fetch an installer and run it
  *   wcshell.exe /install    "Install WinCraft OS": copy a live system to a disk
  *   wcshell.exe /features   "WinCraft Features": the features added to this computer
+ *   wcshell.exe /update     "Update WinCraft": install a newer release from GitHub
  *
  * The shell owns no application logic: programs are whatever the Start Menu
  * and Desktop folders contain, exactly as on Windows, so installers "just
@@ -3477,6 +3478,284 @@ static int features_tool(HINSTANCE inst)
 }
 
 /* ======================================================================
+ * "Update WinCraft": the front end of /usr/lib/wincraft/priv.d/update. It
+ * checks GitHub for a newer release of WinCraft OS, installs it for the next
+ * start, keeping the version in use as the previous one, or goes back to
+ * that previous version.
+ * ====================================================================== */
+
+enum { IDC_UPD_INFO = 600, IDC_UPD_INSTALL, IDC_UPD_NOTES, IDC_UPD_PREVIOUS };
+
+#define UPDATE_STATUS   L"/run/wincraft/update.status"
+
+static struct {
+    char system[16], installed[32], next[32], previous[32], latest[32], error[300];
+    BOOL busy, checking;
+    FILETIME started;
+} g_upd;
+
+/* When a file under / was last written. */
+static BOOL native_mtime(const WCHAR *unix_path, FILETIME *ft)
+{
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    WCHAR path[MAX_PATH], *p;
+
+    wsprintfW(path, L"\\\\?\\unix%s", unix_path);
+    for (p = path + 8; *p; p++)
+        if (*p == L'/')
+            *p = L'\\';
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &d))
+        return FALSE;
+    *ft = d.ftLastWriteTime;
+    return TRUE;
+}
+
+/* Is version a newer than b? Numbers separated by dots. */
+static BOOL version_newer(const char *a, const char *b)
+{
+    while (*a || *b) {
+        long x = strtol(a, (char **)&a, 10), y = strtol(b, (char **)&b, 10);
+
+        if (x != y)
+            return x > y;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+        if ((*a && (*a < '0' || *a > '9')) || (*b && (*b < '0' || *b > '9')))
+            break;
+    }
+    return FALSE;
+}
+
+static void upd_buttons(HWND hwnd)
+{
+    BOOL installed = !strcmp(g_upd.system, "installed");
+    BOOL newer = g_upd.latest[0] && version_newer(g_upd.latest, g_upd.installed) && strcmp(g_upd.next, g_upd.latest);
+    WCHAR text[64];
+
+    wsprintfW(text, newer ? L"Update to %S" : L"Update", g_upd.latest);
+    SetDlgItemTextW(hwnd, IDC_UPD_INSTALL, text);
+    wsprintfW(text, g_upd.previous[0] ? L"Go back to %S" : L"Go back", g_upd.previous);
+    SetDlgItemTextW(hwnd, IDC_UPD_PREVIOUS, text);
+    EnableWindow(GetDlgItem(hwnd, IDC_UPD_INSTALL), !g_upd.busy && installed && newer);
+    EnableWindow(GetDlgItem(hwnd, IDC_UPD_NOTES), g_upd.latest[0] != 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_UPD_PREVIOUS), !g_upd.busy && installed && g_upd.previous[0]);
+}
+
+/* What the check found, in words. */
+static void upd_show(HWND hwnd)
+{
+    WCHAR text[1600], part[600];
+    BOOL installed = !strcmp(g_upd.system, "installed");
+    BOOL newer = g_upd.latest[0] && version_newer(g_upd.latest, g_upd.installed);
+
+    wsprintfW(text, L"WinCraft OS %S is in use, %s.", g_upd.installed[0] ? g_upd.installed : "?",
+              installed ? L"installed on this computer's disk" : L"in a live session started from its ISO or USB stick");
+    if (g_upd.next[0]) {
+        wsprintfW(part, L"\r\n%S is installed and starts when the computer restarts.", g_upd.next);
+        lstrcatW(text, part);
+    }
+    if (g_upd.error[0])
+        wsprintfW(part, L"\r\n\r\nThe newest release could not be checked: %S.", g_upd.error);
+    else if (!newer)
+        wsprintfW(part, L"\r\n\r\nNewest release on GitHub: %S. This computer has it.", g_upd.latest);
+    else if (g_upd.next[0] && !strcmp(g_upd.next, g_upd.latest))
+        wsprintfW(part, L"\r\n\r\nNewest release on GitHub: %S, installed for the next start.", g_upd.latest);
+    else if (!installed)
+        wsprintfW(part, L"\r\n\r\nNewest release on GitHub: %S. A live session takes it by starting from its ISO, "
+                  L"from the releases page.", g_upd.latest);
+    else
+        wsprintfW(part, L"\r\n\r\nNewest release on GitHub: %S. Update installs it for the next start: about 270 MB "
+                  L"is downloaded and checked against the checksum published with it.", g_upd.latest);
+    lstrcatW(text, part);
+    if (g_upd.previous[0]) {
+        wsprintfW(part, L"\r\n\r\n%S is kept from before the last update; you can go back to it.", g_upd.previous);
+        lstrcatW(text, part);
+    }
+    SetDlgItemTextW(hwnd, IDC_UPD_INFO, text);
+    upd_buttons(hwnd);
+}
+
+/* Have the system run priv.d/update; the timer follows its status. */
+static void upd_start(HWND hwnd, const WCHAR *args, BOOL checking)
+{
+    WCHAR cmd[120];
+
+    ZeroMemory(&g_upd.started, sizeof(g_upd.started));
+    native_mtime(UPDATE_STATUS, &g_upd.started);
+    wsprintfW(cmd, L"/usr/bin/wcctl priv update %s", args);
+    if (!run_native(cmd, FALSE)) {
+        SetDlgItemTextW(hwnd, IDC_UPD_INFO, L"The system service did not respond.");
+        return;
+    }
+    g_upd.busy = TRUE;
+    g_upd.checking = checking;
+    upd_buttons(hwnd);
+    if (checking)
+        SetDlgItemTextW(hwnd, IDC_UPD_INFO, L"Checking GitHub for the newest release...");
+    SetTimer(hwnd, 1, 700, NULL);
+}
+
+static LRESULT CALLBACK update_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_COMMAND: {
+        WCHAR text[600], args[64];
+
+        if (LOWORD(wp) == IDC_UPD_INSTALL && !g_upd.busy) {
+            wsprintfW(text, L"Update WinCraft OS from %S to %S?\n\nAbout 270 MB is downloaded from GitHub and checked "
+                      L"against the checksum published with it. The new version starts when the computer restarts; "
+                      L"%S is kept so that you can go back to it. Your programs, files and features are not "
+                      L"touched.", g_upd.installed, g_upd.latest, g_upd.installed);
+            if (MessageBoxW(hwnd, text, L"Update WinCraft", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                wsprintfW(args, L"install %S", g_upd.latest);
+                upd_start(hwnd, args, FALSE);
+            }
+        } else if (LOWORD(wp) == IDC_UPD_PREVIOUS && !g_upd.busy) {
+            wsprintfW(text, L"Go back to WinCraft OS %S?\n\nIt starts again when the computer restarts, in place of "
+                      L"%S, which is kept in its turn. Your programs, files and features are not touched.",
+                      g_upd.previous, g_upd.next[0] ? g_upd.next : g_upd.installed);
+            if (MessageBoxW(hwnd, text, L"Update WinCraft", MB_YESNO | MB_ICONQUESTION) == IDYES)
+                upd_start(hwnd, L"previous", FALSE);
+        } else if (LOWORD(wp) == IDC_UPD_NOTES && g_upd.latest[0]) {
+            wsprintfW(text, L"https://github.com/PSthelyBlog/wincraft/releases/tag/v%S", g_upd.latest);
+            ShellExecuteW(hwnd, NULL, text, NULL, NULL, SW_SHOWNORMAL);
+        } else if (LOWORD(wp) == IDCANCEL) {
+            SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        return 0;
+    }
+    case WM_TIMER: {
+        char buf[4096], *line, *next, *last;
+        WCHAR text[400];
+        FILETIME now;
+
+        /* a fresh status only: the helper empties the file as it starts */
+        if (!native_mtime(UPDATE_STATUS, &now) || !CompareFileTime(&now, &g_upd.started) ||
+            !read_native_file(UPDATE_STATUS, buf, sizeof(buf)) || !buf[0])
+            return 0;
+        while (buf[0] && buf[strlen(buf) - 1] == '\n')
+            buf[strlen(buf) - 1] = 0;
+        last = strrchr(buf, '\n');
+        last = last ? last + 1 : buf;
+        if (g_upd.checking) {
+            if (strcmp(last, "checked") && strncmp(last, "error:", 6))
+                return 0;
+            KillTimer(hwnd, 1);
+            g_upd.busy = FALSE;
+            g_upd.system[0] = g_upd.installed[0] = g_upd.next[0] = g_upd.previous[0] = 0;
+            g_upd.latest[0] = g_upd.error[0] = 0;
+            for (line = buf; line && *line; line = next) {
+                next = strchr(line, '\n');
+                if (next)
+                    *next++ = 0;
+                if (!strncmp(line, "system ", 7)) lstrcpynA(g_upd.system, line + 7, sizeof(g_upd.system));
+                else if (!strncmp(line, "installed ", 10)) lstrcpynA(g_upd.installed, line + 10, sizeof(g_upd.installed));
+                else if (!strncmp(line, "next ", 5)) lstrcpynA(g_upd.next, line + 5, sizeof(g_upd.next));
+                else if (!strncmp(line, "previous ", 9)) lstrcpynA(g_upd.previous, line + 9, sizeof(g_upd.previous));
+                else if (!strncmp(line, "latest ", 7)) lstrcpynA(g_upd.latest, line + 7, sizeof(g_upd.latest));
+                else if (!strncmp(line, "error: ", 7)) lstrcpynA(g_upd.error, line + 7, sizeof(g_upd.error));
+            }
+            upd_show(hwnd);
+        } else if (!strcmp(last, "done")) {
+            KillTimer(hwnd, 1);
+            g_upd.busy = FALSE;
+            if (MessageBoxW(hwnd, L"Done. The change takes effect when the computer restarts.\n\nRestart now?",
+                            L"Update WinCraft", MB_YESNO | MB_ICONINFORMATION) == IDYES)
+                run_native(L"/usr/lib/wincraft/end-session reboot", FALSE);
+            upd_start(hwnd, L"check", TRUE);
+        } else if (!strncmp(last, "error:", 6)) {
+            KillTimer(hwnd, 1);
+            g_upd.busy = FALSE;
+            wsprintfW(text, L"That did not work: %S.\r\n\r\nThe version in use is unchanged.", last + 7);
+            SetDlgItemTextW(hwnd, IDC_UPD_INFO, text);
+            upd_buttons(hwnd);
+        } else {
+            wsprintfW(text, L"%S...", last);
+            SetDlgItemTextW(hwnd, IDC_UPD_INFO, text);
+        }
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)lp == GetDlgItem(hwnd, IDC_UPD_INFO)) {      /* read-only, but white */
+            SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        SetBkMode((HDC)wp, TRANSPARENT);
+        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    case WM_CLOSE:
+        if (g_upd.busy && !g_upd.checking)      /* an update is being written: stay to report it */
+            return 0;
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static int update_tool(HINSTANCE inst)
+{
+    static const WCHAR *intro =
+        L"WinCraft OS is updated from its releases on GitHub (github.com/PSthelyBlog/wincraft). The download is "
+        L"checked against its published checksum, and the version in use is kept, so that you can go back to it.";
+    WNDCLASSEXW wc;
+    RECT rc = { 0, 0, 520, 268 };
+    HFONT font;
+    HWND hwnd, ctl;
+    MSG msg;
+    int i;
+
+    if (CreateMutexW(NULL, TRUE, L"WinCraftUpdate") && GetLastError() == ERROR_ALREADY_EXISTS)
+        return 0;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = inst;
+    wc.lpfnWndProc = update_proc;
+    wc.lpszClassName = L"WinCraftUpdate";
+    wc.hCursor = LoadCursorW(NULL, (const WCHAR *)IDC_ARROW);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    RegisterClassExW(&wc);
+    AdjustWindowRect(&rc, WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+    hwnd = CreateWindowExW(0, wc.lpszClassName, L"Update WinCraft", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                           (GetSystemMetrics(SM_CXSCREEN) - (rc.right - rc.left)) / 2,
+                           (GetSystemMetrics(SM_CYSCREEN) - (rc.bottom - rc.top)) / 3,
+                           rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, inst, NULL);
+    if (!hwnd)
+        return 1;
+    font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    {
+        const struct { const WCHAR *cls, *text; DWORD style, exstyle; int x, y, w, h, id; } items[] = {
+            { L"STATIC", intro, 0, 0, 16, 14, 488, 42, 0 },
+            { L"EDIT", L"", ES_MULTILINE | ES_READONLY | WS_VSCROLL, WS_EX_CLIENTEDGE, 16, 62, 488, 150,
+              IDC_UPD_INFO },
+            { L"BUTTON", L"Update", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 16, 226, 120, 28, IDC_UPD_INSTALL },
+            { L"BUTTON", L"Release notes", WS_TABSTOP, 0, 144, 226, 110, 28, IDC_UPD_NOTES },
+            { L"BUTTON", L"Go back", WS_TABSTOP, 0, 262, 226, 120, 28, IDC_UPD_PREVIOUS },
+            { L"BUTTON", L"Close", WS_TABSTOP, 0, 404, 226, 100, 28, IDCANCEL },
+        };
+
+        for (i = 0; i < (int)ARRAYSIZE(items); i++) {
+            ctl = CreateWindowExW(items[i].exstyle, items[i].cls, items[i].text, WS_CHILD | WS_VISIBLE | items[i].style,
+                                  items[i].x, items[i].y, items[i].w, items[i].h, hwnd,
+                                  (HMENU)(INT_PTR)items[i].id, inst, NULL);
+            SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        }
+    }
+    upd_buttons(hwnd);
+    upd_start(hwnd, L"check", TRUE);
+    ShowWindow(hwnd, SW_SHOW);
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (IsDialogMessageW(hwnd, &msg))
+            continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return 0;
+}
+
+/* ======================================================================
  * First-time setup: default shortcuts
  * ====================================================================== */
 
@@ -3574,6 +3853,8 @@ static int setup(void)
                          L"Get Windows programs from the web", NULL, 0)) ||
         FAILED(make_link(programs, L"WinCraft Features", target, L"/features",
                          L"Features added to WinCraft OS on this computer", NULL, 0)) ||
+        FAILED(make_link(programs, L"Update WinCraft", target, L"/update",
+                         L"Install a newer WinCraft OS from its releases on GitHub", NULL, 0)) ||
         FAILED(make_link(programs, L"Install WinCraft OS", target, L"/install",
                          L"Install WinCraft OS on this computer", shell32, -9)) ||
         FAILED(make_link(desktop, L"Install WinCraft OS", target, L"/install",
@@ -3626,6 +3907,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     if (StrStrIW(cmdline, L"/install")) {
         InitCommonControls();
         return install_tool(inst);
+    }
+    if (StrStrIW(cmdline, L"/update")) {
+        InitCommonControls();
+        return update_tool(inst);
     }
 
     mutex = CreateMutexW(NULL, TRUE, L"WinCraftShell");

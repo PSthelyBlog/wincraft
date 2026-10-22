@@ -1,0 +1,250 @@
+#!/bin/sh
+# Update an installed WinCraft OS from its releases on GitHub. Runs as root,
+# started by wcinit on behalf of the desktop ("wcctl priv update ...": the
+# "Update WinCraft" window, or WinCraft Assistant after the person allowed it).
+#
+#   update check              the installed version, the newest release, the
+#                             one installed for the next start and the one
+#                             kept from before the last update
+#   update install <version>  download the newest release, check it and
+#                             install it for the next start; the version in
+#                             use now is kept as the previous one
+#   update previous           go back to the previous version (next start);
+#                             the version left becomes the previous one
+#
+# Releases come only from https://github.com/PSthelyBlog/wincraft, fetched by
+# curl, which checks the server's certificate. The ISO must match the SHA-256
+# published next to it, the check the README asks of anyone who downloads it
+# by hand. Its system image, kernel and initramfs go on the boot partition
+# beside the ones in use, then take their place; those become the previous
+# version (wincraft/system-previous.sfs, boot/vmlinuz-previous,
+# boot/initramfs-previous.img), which the boot menu offers when its initramfs
+# knows wc.image=previous (WinCraft 0.8 and later). The data partition, with
+# the person's programs, files and features, is not touched.
+#
+# Progress goes to /run/wincraft/update.status, one line at a time; the last
+# line is "checked", "done" or "error: <reason>". While one of these runs,
+# another does nothing, and leaves the status to the first.
+PATH=/usr/bin
+REPO=PSthelyBlog/wincraft
+status=/run/wincraft/update.status
+lock=/run/wincraft/update.lock
+work=/var/cache/wincraft-update
+esp=
+esp_was=        # how the boot partition was mounted: "ro" at /live/medium, or "" (mounted here)
+
+mkdir "$lock" 2>/dev/null || exit 0
+trap 'rmdir "$lock" 2>/dev/null' EXIT
+: > "$status"
+chmod 644 "$status"
+
+say()  { echo "$*" >> "$status"; }
+cleanup() {
+    umount "$work/iso" 2>/dev/null
+    rm -rf "$work"
+    if [ "$esp_was" = ro ]; then
+        mount -o remount,ro /live/medium 2>/dev/null
+    elif [ -n "$esp" ]; then
+        umount "$esp" 2>/dev/null
+    fi
+}
+fail() { say "error: $*"; cleanup; exit 1; }
+
+# get <url> <file>: https only, also after redirects, with the certificate checked
+get() {
+    curl -fsS --proto =https --proto-redir =https --tlsv1.2 --connect-timeout 20 -L -o "$2" "$1"
+}
+
+# newer A B: is version A newer than B? (numbers separated by dots)
+newer() {
+    a=$1 b=$2
+    while [ -n "$a$b" ]; do
+        x=${a%%.*} y=${b%%.*}
+        if [ "$a" = "$x" ]; then a=; else a=${a#*.}; fi
+        if [ "$b" = "$y" ]; then b=; else b=${b#*.}; fi
+        [ "${x:-0}" -gt "${y:-0}" ] && return 0
+        [ "${x:-0}" -lt "${y:-0}" ] && return 1
+    done
+    return 1
+}
+
+valid_version() { case "$1" in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac; return 0; }
+
+# The newest release: GitHub sends .../releases/latest on to .../releases/tag/v<version>.
+latest_version() {
+    v=$(curl -fsS --proto =https --tlsv1.2 --connect-timeout 20 -o /dev/null -w '%{redirect_url}' \
+        "https://github.com/$REPO/releases/latest") || return 1
+    v=${v##*/tag/v}
+    valid_version "$v" || return 1
+    echo "$v"
+}
+
+installed=$(cat /etc/wincraft/version 2>/dev/null)
+medium=$(sed -n 's/.*wc\.medium=\(UUID=[A-Za-z0-9-]*\).*/\1/p' /proc/cmdline)
+if [ -e /run/wincraft/live ] || [ -z "$medium" ] || ! grep -q ' /live/data ' /proc/mounts; then
+    kind=live
+else
+    kind=installed
+fi
+
+# The boot partition, read-only or writable: at /live/medium where it is
+# mounted (read-only, as the system runs from it), else mounted here.
+mount_esp() {
+    if grep -q ' /live/medium ' /proc/mounts; then
+        esp=/live/medium
+        if [ "$1" = rw ]; then
+            mount -o remount,rw /live/medium || return 1
+            esp_was=ro
+        fi
+    else
+        dev=$(findfs "$medium" 2>/dev/null) || return 1
+        esp=/run/wincraft/update-boot
+        mkdir -p "$esp"
+        mount -t vfat -o "$1" "$dev" "$esp" || { esp=; return 1; }
+    fi
+}
+
+# The boot menu's "previous version" entry, for the version kept, when its
+# initramfs knows wc.image=previous; the other entries are left as they are.
+previous_entry() {
+    conf=$esp/boot/limine/limine.conf
+    prev=$(cat "$esp/wincraft/version-previous" 2>/dev/null)
+    [ -f "$conf" ] || return 0
+    awk '/^\/WinCraft OS \(previous version/ { skip = 1; next } /^\// { skip = 0 } !skip' "$conf" > "$conf.new" ||
+        return 1
+    if [ -n "$prev" ] && ! newer 0.8 "$prev" && [ -f "$esp/wincraft/system-previous.sfs" ]; then
+        cmdline=$(sed -n '/^ *cmdline:/{s/^ *cmdline: *//p;q}' "$conf")
+        cat >> "$conf.new" <<ENTRY
+
+/WinCraft OS (previous version, $prev)
+    comment: The version from before the last update, kept in case this one does not work.
+    protocol: linux
+    path: boot():/boot/vmlinuz-previous
+    module_path: boot():/boot/initramfs-previous.img
+    cmdline: $cmdline wc.image=previous
+ENTRY
+    fi
+    mv "$conf.new" "$conf"
+}
+
+case "$1" in
+check)
+    say "system $kind"
+    say "installed $installed"
+    if [ "$kind" = installed ] && mount_esp ro; then
+        next=$(cat "$esp/wincraft/version" 2>/dev/null)
+        [ -n "$next" ] && [ "$next" != "$installed" ] && say "next $next"
+        prev=$(cat "$esp/wincraft/version-previous" 2>/dev/null)
+        [ -f "$esp/wincraft/system-previous.sfs" ] && [ -n "$prev" ] && say "previous $prev"
+        [ "$esp" = /live/medium ] || umount "$esp"
+        esp=
+    fi
+    latest=$(latest_version) || fail "GitHub could not be reached, or did not name its newest release"
+    say "latest $latest"
+    say "checked"
+    ;;
+
+install)
+    ver=$2
+    [ "$kind" = installed ] || fail "updates are for WinCraft installed on a disk; this is a live session"
+    valid_version "$ver" || fail "invalid version"
+    say "Checking the newest release"
+    latest=$(latest_version) || fail "GitHub could not be reached, or did not name its newest release"
+    [ "$ver" = "$latest" ] || fail "$ver is not the newest release, $latest is"
+    newer "$ver" "$installed" || fail "$ver is not newer than the version installed, $installed"
+    mount_esp ro || fail "the boot partition could not be found"
+    [ "$(cat "$esp/wincraft/version" 2>/dev/null)" = "$ver" ] && fail "$ver is installed already and starts at the next restart"
+    [ "$esp" = /live/medium ] || umount "$esp"
+    esp=
+    free=$(df -k /var/cache | awk 'NR == 2 { print $4 }')
+    [ "${free:-0}" -ge 716800 ] || fail "the data partition needs 700 MB free for the download"
+
+    rm -rf "$work"
+    mkdir -p "$work/iso"
+    iso=wincraft-$ver-x86_64.iso
+    url=https://github.com/$REPO/releases/download/v$ver/$iso
+    say "Downloading WinCraft OS $ver"
+    get "$url.sha256" "$work/$iso.sha256" || fail "the checksum could not be downloaded"
+    expected=$(awk -v f="$iso" '$2 == f { print $1 }' "$work/$iso.sha256")
+    case "$expected" in
+        [0-9a-f]*) [ ${#expected} -eq 64 ] || fail "the checksum file is not as expected" ;;
+        *) fail "the checksum file is not as expected" ;;
+    esac
+    size=$(curl -fsSIL --proto =https --proto-redir =https --tlsv1.2 --connect-timeout 20 "$url" |
+           tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')
+    get "$url" "$work/$iso" &
+    pid=$!
+    while kill -0 $pid 2>/dev/null; do
+        sleep 2
+        if [ "${size:-0}" -gt 0 ]; then
+            got=$(stat -c %s "$work/$iso" 2>/dev/null || echo 0)
+            say "Downloading WinCraft OS $ver: $((got / 1048576)) of $((size / 1048576)) MB"
+        fi
+    done
+    wait $pid || fail "the download failed"
+
+    say "Checking the download"
+    actual=$(sha256sum "$work/$iso" | cut -d' ' -f1)
+    [ "$actual" = "$expected" ] || fail "the download does not match its published checksum"
+    mount -t iso9660 -o ro,loop "$work/$iso" "$work/iso" || fail "the download could not be opened"
+    [ "$(cat "$work/iso/wincraft/version" 2>/dev/null)" = "$ver" ] || fail "the download is not version $ver"
+    for f in wincraft/system.sfs boot/vmlinuz boot/initramfs.img; do
+        [ -f "$work/iso/$f" ] || fail "the download lacks $f"
+    done
+
+    say "Installing WinCraft OS $ver"
+    mount_esp rw || fail "the boot partition could not be opened for writing"
+    # room for the new version: the one from two updates ago goes first
+    rm -f "$esp/wincraft/system-previous.sfs" "$esp/wincraft/version-previous" \
+          "$esp/boot/vmlinuz-previous" "$esp/boot/initramfs-previous.img"
+    previous_entry
+    need=$(du -k "$work/iso/wincraft/system.sfs" "$work/iso/boot/vmlinuz" "$work/iso/boot/initramfs.img" |
+           awk '{ n += $1 } END { print n + 4096 }')
+    free=$(df -k "$esp" | awk 'NR == 2 { print $4 }')
+    [ "${free:-0}" -ge "$need" ] || fail "the boot partition has too little room"
+    for f in wincraft/system.sfs boot/vmlinuz boot/initramfs.img; do
+        cp "$work/iso/$f" "$esp/$f.new" || { rm -f "$esp"/*/*.new; fail "copying $f failed"; }
+    done
+    sync
+    for f in wincraft/system.sfs boot/vmlinuz boot/initramfs.img; do
+        cmp -s "$work/iso/$f" "$esp/$f.new" || { rm -f "$esp"/*/*.new; fail "$f was not copied correctly"; }
+    done
+    # the version in use becomes the previous one, the new one takes its place
+    mv "$esp/wincraft/system.sfs" "$esp/wincraft/system-previous.sfs" &&
+    mv "$esp/boot/vmlinuz" "$esp/boot/vmlinuz-previous" &&
+    mv "$esp/boot/initramfs.img" "$esp/boot/initramfs-previous.img" &&
+    { cp "$esp/wincraft/version" "$esp/wincraft/version-previous" 2>/dev/null || echo "$installed" > "$esp/wincraft/version-previous"; } &&
+    mv "$esp/wincraft/system.sfs.new" "$esp/wincraft/system.sfs" &&
+    mv "$esp/boot/vmlinuz.new" "$esp/boot/vmlinuz" &&
+    mv "$esp/boot/initramfs.img.new" "$esp/boot/initramfs.img" &&
+    cp "$work/iso/wincraft/version" "$esp/wincraft/version" || fail "the new version could not be put in place"
+    previous_entry
+    sync
+    cleanup
+    say "done"
+    ;;
+
+previous)
+    [ "$kind" = installed ] || fail "this is a live session"
+    mount_esp rw || fail "the boot partition could not be opened for writing"
+    for f in wincraft/system boot/vmlinuz boot/initramfs; do
+        case $f in wincraft/system) ext=.sfs ;; boot/initramfs) ext=.img ;; *) ext= ;; esac
+        [ -f "$esp/$f-previous$ext" ] || fail "no previous version is kept"
+    done
+    say "Going back to WinCraft OS $(cat "$esp/wincraft/version-previous" 2>/dev/null)"
+    for f in wincraft/system.sfs:wincraft/system-previous.sfs boot/vmlinuz:boot/vmlinuz-previous \
+             boot/initramfs.img:boot/initramfs-previous.img wincraft/version:wincraft/version-previous; do
+        cur=$esp/${f%%:*} old=$esp/${f#*:}
+        mv "$cur" "$cur.swap" && mv "$old" "$cur" && mv "$cur.swap" "$old" ||
+            fail "the files could not be swapped"
+    done
+    previous_entry
+    sync
+    cleanup
+    say "done"
+    ;;
+
+*)
+    fail "usage: update check | install <version> | previous"
+    ;;
+esac

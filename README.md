@@ -112,6 +112,9 @@ Verified in QEMU, booting the ISO, unless noted:
   persisting across reboots. After the installation the computer starts the
   disk even with the installation ISO still attached.
 - Shut down and restart from the Start menu.
+- **Updates from GitHub** (0.8): an installed WinCraft takes the newest
+  release with *Update WinCraft* or WinCraft Assistant, checked against its
+  published checksum, and can go back to the version it replaced.
 - Third-party software (tested in the native desktop session, `./wc desktop`):
   the **7-Zip** installer downloaded with *Download a Program*, installed,
   appeared in the Start menu and ran; both the 64-bit and the 32-bit builds.
@@ -417,6 +420,25 @@ never used instead. An installation CD is ejected as the computer restarts.
 A USB stick can stay in, but if the computer's firmware starts it before the
 disk, remove it or choose the disk in the firmware's boot menu. *Install
 WinCraft OS* is shown only in a session started from the installation medium.
+
+### Updating
+
+An installed WinCraft updates itself from its releases on GitHub. **Update
+WinCraft** in the Start menu (or WinCraft Assistant, when asked) shows the
+version in use and the newest release; **Update** downloads it, about 270 MB,
+checks it against the SHA-256 published with it, and installs it beside the
+version in use. The new version starts at the next restart. The version it
+replaces is kept: **Go back** starts it again from the next restart, and the
+boot menu offers it as *WinCraft OS (previous version, ...)* when it is 0.8
+or later. Your programs, files and features are on the data partition and
+are not touched.
+
+The download comes only from `github.com/PSthelyBlog/wincraft`, over HTTPS
+with the server's certificate checked, and must match its published
+checksum: the check this README asks of anyone who downloads the ISO by
+hand, and the same trust in the project's GitHub account, with no other
+signature. A live session has nothing to update: start the new ISO. An
+installation from before 0.8 has no updater; install 0.8 or later once.
 
 ## Build it
 

@@ -14,6 +14,8 @@
 # taken instead.
 # Options: wc.toram    copy the image to RAM so the medium can be removed
 #          wc.nodata   ignore WINCRAFT_DATA for this boot (live session)
+#          wc.image=previous  start the version kept from before the last
+#                      update (wincraft/system-previous.sfs, priv.d/update)
 #          wc.break    drop to a shell before switching root
 #          root=...    boot a plain root filesystem instead of the image
 
@@ -32,7 +34,7 @@ rescue() {
     exec setsid cttyhack sh
 }
 
-live= root= toram= brk= nodata= medium=LABEL=WINCRAFT datavol=LABEL=WINCRAFT_DATA
+live= root= toram= brk= nodata= medium=LABEL=WINCRAFT datavol=LABEL=WINCRAFT_DATA image=system
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         wc.live)   live=1 ;;
@@ -40,6 +42,7 @@ for arg in $(cat /proc/cmdline); do
         wc.data=UUID=*|wc.data=LABEL=*)     datavol=${arg#wc.data=} ;;
         wc.toram)  toram=1 ;;
         wc.nodata) nodata=1 ;;
+        wc.image=previous) image=system-previous ;;
         wc.break)  brk=1 ;;
         root=*)   root=${arg#root=} ;;
     esac
@@ -60,7 +63,7 @@ if [ -n "$live" ]; then
     case "$medium$datavol" in *[!A-Za-z0-9=_-]*) rescue "malformed wc.medium= or wc.data=" ;; esac
     dev=$(wait_for "$medium") || rescue "boot medium ($medium) not found"
     mount -o ro "$dev" /mnt/medium || rescue "cannot mount boot medium $dev"
-    img=/mnt/medium/wincraft/system.sfs
+    img=/mnt/medium/wincraft/$image.sfs
     [ -f "$img" ] || rescue "system image missing on $dev"
 
     # Writable layer: the data partition when present, else memory.
