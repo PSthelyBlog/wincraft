@@ -2001,6 +2001,7 @@ static char *fetch_page(const char *start, size_t *len, char *ctype, size_t ctsi
 
 struct update_state {
     char system[16], installed[32], next[32], previous[32], latest[32], error[300];
+    BOOL previous_boot;     /* the boot menu offers the previous version */
 };
 
 /* Is version a newer than b? Numbers separated by dots. */
@@ -2092,6 +2093,7 @@ static BOOL update_check(struct update_state *st)
         else if (!strncmp(line, "installed ", 10)) lstrcpynA(st->installed, line + 10, sizeof(st->installed));
         else if (!strncmp(line, "next ", 5)) lstrcpynA(st->next, line + 5, sizeof(st->next));
         else if (!strncmp(line, "previous ", 9)) lstrcpynA(st->previous, line + 9, sizeof(st->previous));
+        else if (!strcmp(line, "previous-boot yes")) st->previous_boot = TRUE;
         else if (!strncmp(line, "latest ", 7)) lstrcpynA(st->latest, line + 7, sizeof(st->latest));
         else if (!strncmp(line, "error: ", 7)) lstrcpynA(st->error, line + 7, sizeof(st->error));
     }
@@ -2138,9 +2140,20 @@ static void check_for_update(sb_t *b, char **label)
             live ? "a live session (nothing to update: a new version is a new ISO)" : "installed on a disk");
     if (st.next[0])
         sb_addf(b, "Installed for the next start: %s (it is used once the computer restarts).\n", st.next);
-    if (st.previous[0])
-        sb_addf(b, "Kept from before the last update: %s (use_previous_version goes back to it; from WinCraft "
-                   "0.8 on, the boot menu also offers it).\n", st.previous);
+    if (st.previous[0]) {
+        sb_addf(b, "Kept from before the last update: %s. use_previous_version goes back to it from the next "
+                   "restart.", st.previous);
+        /* what the boot menu holds on this computer, not the rule: the
+         * model read "from 0.8 on" as being about the version in use */
+        if (st.previous_boot)
+            sb_addf(b, " This computer's boot menu also offers it, as \"WinCraft OS (previous version, %s)\", "
+                       "for when the version in use does not start properly.\n", st.previous);
+        else if (version_newer("0.8", st.previous))
+            sb_addf(b, " This computer's boot menu does not offer it: %s is older than 0.8, and versions before "
+                       "0.8 cannot be started from there.\n", st.previous);
+        else
+            sb_add(b, " This computer's boot menu does not offer it.\n");
+    }
     if (st.error[0]) {
         sb_addf(b, "The newest release could not be checked: %s.\n", st.error);
         return;

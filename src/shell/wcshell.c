@@ -3490,6 +3490,7 @@ enum { IDC_UPD_INFO = 600, IDC_UPD_INSTALL, IDC_UPD_NOTES, IDC_UPD_PREVIOUS };
 
 static struct {
     char system[16], installed[32], next[32], previous[32], latest[32], error[300];
+    BOOL previous_boot;     /* the boot menu offers the previous version */
     BOOL busy, checking;
     FILETIME started;
 } g_upd;
@@ -3570,6 +3571,8 @@ static void upd_show(HWND hwnd)
     if (g_upd.previous[0]) {
         wsprintfW(part, L"\r\n\r\n%S is kept from before the last update; you can go back to it.", g_upd.previous);
         lstrcatW(text, part);
+        if (g_upd.previous_boot)
+            lstrcatW(text, L" The boot menu also offers it, for when the version in use does not start.");
     }
     SetDlgItemTextW(hwnd, IDC_UPD_INFO, text);
     upd_buttons(hwnd);
@@ -3644,6 +3647,7 @@ static LRESULT CALLBACK update_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_upd.busy = FALSE;
             g_upd.system[0] = g_upd.installed[0] = g_upd.next[0] = g_upd.previous[0] = 0;
             g_upd.latest[0] = g_upd.error[0] = 0;
+            g_upd.previous_boot = FALSE;
             for (line = buf; line && *line; line = next) {
                 next = strchr(line, '\n');
                 if (next)
@@ -3652,6 +3656,7 @@ static LRESULT CALLBACK update_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 else if (!strncmp(line, "installed ", 10)) lstrcpynA(g_upd.installed, line + 10, sizeof(g_upd.installed));
                 else if (!strncmp(line, "next ", 5)) lstrcpynA(g_upd.next, line + 5, sizeof(g_upd.next));
                 else if (!strncmp(line, "previous ", 9)) lstrcpynA(g_upd.previous, line + 9, sizeof(g_upd.previous));
+                else if (!strcmp(line, "previous-boot yes")) g_upd.previous_boot = TRUE;
                 else if (!strncmp(line, "latest ", 7)) lstrcpynA(g_upd.latest, line + 7, sizeof(g_upd.latest));
                 else if (!strncmp(line, "error: ", 7)) lstrcpynA(g_upd.error, line + 7, sizeof(g_upd.error));
             }

@@ -5,7 +5,8 @@
 #
 #   update check              the installed version, the newest release, the
 #                             one installed for the next start and the one
-#                             kept from before the last update
+#                             kept from before the last update, and whether
+#                             the boot menu offers that one
 #   update install <version>  download the newest release, check it and
 #                             install it for the next start; the version in
 #                             use now is kept as the previous one
@@ -135,7 +136,15 @@ check)
         next=$(cat "$esp/wincraft/version" 2>/dev/null)
         [ -n "$next" ] && [ "$next" != "$installed" ] && say "next $next"
         prev=$(cat "$esp/wincraft/version-previous" 2>/dev/null)
-        [ -f "$esp/wincraft/system-previous.sfs" ] && [ -n "$prev" ] && say "previous $prev"
+        if [ -f "$esp/wincraft/system-previous.sfs" ] && [ -n "$prev" ]; then
+            say "previous $prev"
+            # whether the boot menu offers it (previous_entry)
+            if grep -q '^/WinCraft OS (previous version' "$esp/boot/limine/limine.conf" 2>/dev/null; then
+                say "previous-boot yes"
+            else
+                say "previous-boot no"
+            fi
+        fi
         [ "$esp" = /live/medium ] || umount "$esp"
         esp=
     fi

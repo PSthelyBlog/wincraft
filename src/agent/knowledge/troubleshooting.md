@@ -282,9 +282,12 @@ Change them yourself; the WinCraft Agent is not needed.
   The version in use is kept as the previous one. Programs, files and
   features are on the data partition and are not touched.
 - `use_previous_version` (it asks permission) goes back to the kept version
-  from the next restart; the version left is kept in its place. When the
-  kept version is 0.8 or later, the boot menu also offers it as *WinCraft OS
-  (previous version, ...)*, for a version that does not start properly.
+  from the next restart; the version left is kept in its place. The boot
+  menu offers the kept version as *WinCraft OS (previous version, ...)*,
+  for a version in use that does not start properly, only when the kept
+  version is 0.8 or later (the version in use does not matter).
+  `check_for_update` says whether this computer's boot menu has that entry;
+  go by it.
 - The person can do the same without the assistant: *Update WinCraft* in the
   Start menu.
 - A live session (started from the ISO or USB) has nothing to update: a new
