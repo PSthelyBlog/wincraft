@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.1 — 2026-10-22
+
+WinCraft Assistant now says correctly whether the boot menu offers the
+previous version.
+
+- **Fixed: the Assistant could point to a boot menu entry that is not
+  there.** Asked how to go back after an update, it told a system updated
+  from 0.7.25 to 0.8 to pick *WinCraft OS (previous version, ...)* in the
+  boot menu. That entry exists only when the version kept is 0.8 or later,
+  whatever the version in use. The update check now reads the boot menu
+  itself, and the Assistant says whether this computer's menu has the
+  entry, and why not when it has none.
+- *Update WinCraft* says so too, when the boot menu offers the version
+  kept.
+- This is the first release that 0.8 can update to: open *Update WinCraft*
+  in the Start menu, or ask WinCraft Assistant.
+- Everything else is as in 0.8.
+
 ## 0.8 — 2026-10-22
 
 WinCraft OS updates itself from GitHub.
