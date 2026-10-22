@@ -55,9 +55,10 @@ WCHAR g_provider_host[256];         /* also read by tools.c */
 int g_provider_port;
 static json *g_messages, *g_tools_json;
 static char *g_system, *g_snapshot;
+static size_t g_system_fixed;     /* g_system's start that is the same in every chat */
 static BOOL g_busy, g_diag_allowed, g_web_allowed;   /* "Allow for this chat" */
 static BOOL g_rich;                 /* the chat is a rich edit control, not a plain one */
-static long g_tok_in, g_tok_out;
+static long g_tok_in, g_tok_out, g_tok_cached;
 static WCHAR g_chat_file[MAX_PATH];
 static WNDPROC g_input_proc;
 static HANDLE g_stop_event;         /* set by Stop: the chat thread stops waiting */
@@ -277,7 +278,7 @@ static DWORD WINAPI setup_thread(void *arg)
         llm_reply r;
 
         llm_add_user(&job->cfg, msgs, "This is a connection test. Reply with the single word OK.");
-        job->ok = llm_chat(&job->cfg, "You are being tested by a setup program.", NULL, msgs, &r);
+        job->ok = llm_chat(&job->cfg, "You are being tested by a setup program.", 0, NULL, msgs, &r);
         job->text = job->ok ? utf8_dup(r.text ? r.text : "(an empty answer)") : utf8_dup(r.error);
         llm_reply_free(&r);
         json_free(msgs);
@@ -601,8 +602,10 @@ static void show_what_it_sees(void)
                         sizeof(host), NULL, NULL);
     sb_init(&b);
     sb_addf(&b, "At the start of each chat, the assistant sends %s:\n\n"
-                "1. WinCraft's public documentation, which comes with the system (%u KB): the README, "
-                "the changelog, notes on the fixes WinCraft carries for Wine, and troubleshooting guides.\n"
+                "1. Its working rules and the index of WinCraft's public documentation, which comes with the "
+                "system (%u KB). It reads the parts of the documentation it needs during the chat (the README, "
+                "the changelog, notes on the fixes WinCraft carries for Wine, the troubleshooting guide), each "
+                "listed in the chat.\n"
                 "2. This overview of the computer%s:\n\n", host, (unsigned)(strlen(knowledge) / 1024),
             g_snapshot ? ", as sent for the current chat" : ", as it would be sent now");
     sb_add(&b, g_snapshot ? g_snapshot : snap);
@@ -895,8 +898,13 @@ static void update_status(void)
 
     if (g_busy)
         return;
-    _snwprintf(s, ARRAYSIZE(s), L"%s at %s.  This chat: %ld tokens sent, %ld received.", g_cfg.model,
-               g_provider_host, g_tok_in, g_tok_out);
+    /* tokens the provider read from its cache cost it a tenth: say how many */
+    if (g_tok_cached)
+        _snwprintf(s, ARRAYSIZE(s), L"%s at %s.  This chat: %ld tokens sent (%ld of them from the cache), "
+                   L"%ld received.", g_cfg.model, g_provider_host, g_tok_in, g_tok_cached, g_tok_out);
+    else
+        _snwprintf(s, ARRAYSIZE(s), L"%s at %s.  This chat: %ld tokens sent, %ld received.", g_cfg.model,
+                   g_provider_host, g_tok_in, g_tok_out);
     s[ARRAYSIZE(s) - 1] = 0;
     SetWindowTextW(g_status, s);
 }
@@ -1150,6 +1158,7 @@ static void build_system_prompt(void)
     GetSystemTime(&st);
     sb_init(&b);
     sb_add(&b, knowledge);
+    g_system_fixed = b.len;
     sb_addf(&b, "\n\n# This computer right now\n\nCollected %04d-%02d-%02d %02d:%02d UTC, when this chat "
                 "started. Call get_system_snapshot for a fresh copy.\n\n", st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute);
@@ -1181,6 +1190,7 @@ struct request {
     HANDLE done;
     config cfg;
     char *system;
+    size_t fixed;
     json *tools, *messages;
     llm_reply r;
     int ok;
@@ -1203,7 +1213,7 @@ static DWORD WINAPI request_thread(void *arg)
 {
     struct request *q = arg;
 
-    q->ok = llm_chat(&q->cfg, q->system, q->tools, q->messages, &q->r);
+    q->ok = llm_chat(&q->cfg, q->system, q->fixed, q->tools, q->messages, &q->r);
     SetEvent(q->done);
     request_release(q);
     return 0;
@@ -1221,6 +1231,7 @@ static int ask_model(llm_reply *r)
     q->done = CreateEventW(NULL, TRUE, FALSE, NULL);
     q->cfg = g_cfg;
     q->system = utf8_dup(g_system);
+    q->fixed = g_system_fixed;
     q->tools = json_copy(g_tools_json);
     q->messages = json_copy(g_messages);
     t = CreateThread(NULL, 0, request_thread, q, 0, NULL);
@@ -1298,6 +1309,7 @@ static DWORD WINAPI chat_thread(void *arg)
         r.turn = NULL;
         g_tok_in += r.in_tokens;
         g_tok_out += r.out_tokens;
+        g_tok_cached += r.cached_tokens;
         if (r.text)
             post_chat(CHAT_ANSWER, "%s", r.text);
         if (r.truncated) {
@@ -1381,7 +1393,7 @@ static void new_chat(void)
     free(g_snapshot);
     g_snapshot = NULL;
     g_diag_allowed = g_web_allowed = FALSE;
-    g_tok_in = g_tok_out = 0;
+    g_tok_in = g_tok_out = g_tok_cached = 0;
     g_chat_file[0] = 0;
     if (g_agent_mode) {
         agent_end();

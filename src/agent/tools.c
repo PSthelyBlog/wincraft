@@ -965,6 +965,219 @@ char *knowledge_text(void)
 }
 
 /* ======================================================================
+ * Tool: WinCraft's reference, read a section at a time
+ * ====================================================================== */
+
+/*
+ * The prompt carries only the reference's index; the sections themselves
+ * are in reference.md, each after a line "@@ <id>" (tools/assistant-knowledge.py).
+ */
+#define REFERENCE_FILE  "/usr/share/wincraft/assistant/reference.md"
+#define REFERENCE_MAX   24000       /* characters of reference per call: about 6,000 tokens */
+#define SEARCH_SECTIONS 20          /* sections a search lists, with their matching lines */
+#define SEARCH_LINES    3           /* ... at most this many lines from each */
+
+typedef struct {
+    const char *id, *text;
+    size_t len;
+} ref_section;
+
+static char *g_ref;
+static ref_section g_refs[512];
+static int g_nrefs;
+
+static void load_reference(void)
+{
+    char *p, *eol;
+
+    if (g_ref || !(g_ref = read_unix_file(REFERENCE_FILE, 4 << 20)))
+        return;
+    for (p = g_ref; *p; p = eol + 1) {
+        if (!(eol = strchr(p, '\n')))
+            break;
+        if (strncmp(p, "@@ ", 3))
+            continue;
+        if (g_nrefs)
+            g_refs[g_nrefs - 1].len = p - g_refs[g_nrefs - 1].text;
+        if (g_nrefs == (int)ARRAYSIZE(g_refs))
+            return;
+        *eol = 0;
+        g_refs[g_nrefs].id = p + 3;
+        g_refs[g_nrefs].text = eol + 1;
+        g_nrefs++;
+    }
+    if (g_nrefs)
+        g_refs[g_nrefs - 1].len = strlen(g_refs[g_nrefs - 1].text);
+}
+
+static const ref_section *find_section(const char *id)
+{
+    int i;
+
+    for (i = 0; i < g_nrefs; i++)
+        if (!strcmp(g_refs[i].id, id))
+            return &g_refs[i];
+    return NULL;
+}
+
+/* Does the section contain the word, in any case (ASCII)? */
+static BOOL section_has(const ref_section *r, const char *word, size_t wlen)
+{
+    size_t i, j;
+
+    for (i = 0; wlen && i + wlen <= r->len; i++) {
+        for (j = 0; j < wlen && tolower((unsigned char)r->text[i + j]) == tolower((unsigned char)word[j]); j++)
+            ;
+        if (j == wlen)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Does the text contain one of the words, in any case? */
+static BOOL has_any_word(const char *text, size_t len, const char *words)
+{
+    ref_section line = { NULL, text, len };
+    const char *w = words;
+
+    while (*w) {
+        size_t n;
+
+        while (*w == ' ')
+            w++;
+        n = strcspn(w, " ");
+        if (n && section_has(&line, w, n))
+            return TRUE;
+        w += n;
+    }
+    return FALSE;
+}
+
+/* A search finds sections, and shows the lines in which the words appear: the
+ * model then reads the sections it needs. */
+static void add_matching_lines(sb_t *b, const ref_section *r, const char *words)
+{
+    const char *p = r->text, *end = r->text + r->len, *eol;
+    int shown = 0;
+
+    eol = memchr(p, '\n', end - p);
+    sb_addf(b, "=== %s === ", r->id);
+    sb_addn(b, p, eol ? (size_t)(eol - p) : (size_t)(end - p));
+    sb_add(b, "\n");
+    for (p = eol ? eol + 1 : end; p < end && shown < SEARCH_LINES; p = eol + 1) {
+        size_t len, skip;
+
+        if (!(eol = memchr(p, '\n', end - p)))
+            eol = end;
+        len = eol - p;
+        if (!len || !has_any_word(p, len, words))
+            continue;
+        skip = strspn(p, " -*>0123456789.");
+        sb_add(b, "  ... ");
+        sb_addn(b, p + skip, len - skip > 200 ? 200 : len - skip);
+        sb_add(b, "\n");
+        shown++;
+    }
+}
+
+static BOOL section_matches(const ref_section *r, const char *words)
+{
+    const char *w = words;
+
+    while (*w) {
+        size_t n;
+
+        while (*w == ' ')
+            w++;
+        n = strcspn(w, " ");
+        if (n && !section_has(r, w, n))
+            return FALSE;
+        w += n;
+    }
+    return TRUE;
+}
+
+/* Adds a section if it fits; returns FALSE if it did not. */
+static BOOL add_section(sb_t *b, const ref_section *r)
+{
+    size_t len = r->len;
+
+    while (len && (r->text[len - 1] == '\n' || r->text[len - 1] == ' '))
+        len--;
+    if (b->len + len + 64 > REFERENCE_MAX)
+        return FALSE;
+    sb_addf(b, "=== %s ===\n", r->id);
+    sb_addn(b, r->text, len);
+    sb_add(b, "\n\n");
+    return TRUE;
+}
+
+static void read_reference(sb_t *b, const json *args, char **label)
+{
+    const json *ids = json_get(args, "sections"), *id;
+    const char *search = json_str(args, "search");
+    sb_t names, left;
+    int i, found = 0;
+
+    load_reference();
+    if (!g_nrefs) {
+        sb_add(b, "WinCraft's reference is missing from this system.");
+        *label = utf8_dup("WinCraft's reference is missing");
+        return;
+    }
+    sb_init(&names);
+    sb_init(&left);
+    if (ids && ids->type == J_STRING) {
+        /* one id given as a plain string */
+        const ref_section *r = find_section(ids->str);
+
+        if (!r)
+            sb_addf(b, "No section is named %s; the index lists them.\n\n", ids->str);
+        else if (add_section(b, r))
+            sb_add(&names, r->id);
+    }
+    for (id = ids && ids->type == J_ARRAY ? ids->child : NULL; id; id = id->next) {
+        const ref_section *r = id->type == J_STRING ? find_section(id->str) : NULL;
+
+        if (!r) {
+            sb_addf(b, "No section is named %s; the index lists them.\n\n", id->type == J_STRING ? id->str : "?");
+        } else if (add_section(b, r)) {
+            if (names.len)
+                sb_add(&names, ", ");
+            sb_add(&names, r->id);
+        } else {
+            sb_addf(&left, "%s%s", left.len ? ", " : "", r->id);
+        }
+    }
+    if (search && *search) {
+        for (i = 0; i < g_nrefs; i++) {
+            if (!section_matches(&g_refs[i], search))
+                continue;
+            if (++found <= SEARCH_SECTIONS)
+                add_matching_lines(b, &g_refs[i], search);
+            else
+                sb_addf(&left, "%s%s", left.len ? ", " : "", g_refs[i].id);
+        }
+        if (!found)
+            sb_addf(b, "No section contains all of: %s\n", search);
+        else
+            sb_add(b, "\nThese are the sections that contain all of the words, with the lines where they "
+                      "appear. Read the ones you need by id.\n");
+    }
+    if (left.len)
+        sb_addf(b, "Not included here, to keep this short (read them by id if you need them): %s\n", left.s);
+    if (!ids && !(search && *search))
+        sb_add(b, "Give section ids from the index in sections, or words to look for in search.");
+    *label = malloc(200);
+    if (search && *search)
+        snprintf(*label, 200, "Searched WinCraft's reference for \"%.80s\"", search);
+    else
+        snprintf(*label, 200, "Read WinCraft's reference: %.150s", names.len ? names.s : "nothing found");
+    sb_free(&names);
+    sb_free(&left);
+}
+
+/* ======================================================================
  * Tool: look inside a program with Wine's debugger
  * ====================================================================== */
 
@@ -1658,7 +1871,18 @@ static void ask_agent(sb_t *b, const json *args, approve_fn approve, void *ctx, 
       "\"reason\":{\"type\":\"string\",\"description\":\"why you need this page, in a few words; " \
       "shown to the person\"}},\"required\":[\"url\",\"reason\"]}" }
 
+#define REFERENCE_TOOL \
+    { "read_reference", TIER_READ, \
+      "Read sections of WinCraft's reference, which the index in your instructions lists: their ids in " \
+      "sections. Or find sections with search: every section containing all of the words, with the lines " \
+      "where they appear (to find when something changed, or what the reference says about a program), " \
+      "then read the ones you need. Read only what you need; it asks the person nothing.", \
+      "{\"type\":\"object\",\"properties\":{\"sections\":{\"type\":\"array\",\"items\":{\"type\":" \
+      "\"string\"},\"description\":\"section ids from the index\"},\"search\":{\"type\":\"string\"," \
+      "\"description\":\"words the sections must all contain\"}}}" }
+
 const tool_def g_tools[] = {
+    REFERENCE_TOOL,
     { "get_system_snapshot", TIER_READ,
       "Collect a fresh overview of this computer: WinCraft version, live or installed, memory, disk, "
       "network, Wine version, installed and running programs, recent problems in the logs.",
@@ -1751,6 +1975,7 @@ const tool_def g_agent_tools[] = {
       "and how you tested it, in plain words.",
       "{\"type\":\"object\",\"properties\":{\"feature_id\":{\"type\":\"string\"},"
       "\"summary\":{\"type\":\"string\"}},\"required\":[\"feature_id\",\"summary\"]}" },
+    REFERENCE_TOOL,
     WEB_PAGE_TOOL,
 };
 const int g_nagent_tools = ARRAYSIZE(g_agent_tools);
@@ -3312,7 +3537,9 @@ char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ct
 
     sb_init(&b);
     *label = NULL;
-    if (!strcmp(n, "get_system_snapshot")) {
+    if (!strcmp(n, "read_reference")) {
+        read_reference(&b, args, label);
+    } else if (!strcmp(n, "get_system_snapshot")) {
         char *s = system_snapshot();
 
         sb_add(&b, s);
@@ -3371,6 +3598,7 @@ char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ct
     }
     if (!*label)
         *label = utf8_dup(n);
-    cap_result(&b, t->tier == TIER_WEB ? WEB_RESULT_MAX : RESULT_MAX);
+    cap_result(&b, !strcmp(n, "read_reference") ? REFERENCE_MAX + 200 :
+                   t->tier == TIER_WEB ? WEB_RESULT_MAX : RESULT_MAX);
     return sb_take(&b);
 }

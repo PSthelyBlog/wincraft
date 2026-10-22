@@ -355,10 +355,55 @@ static void add_call(llm_reply *r, const char *id, const char *name, json *input
     c->input = input && input->type == J_OBJECT ? input : (json_free(input), json_new(J_OBJECT));
 }
 
-static int chat_anthropic(const config *cfg, const char *system, const json *tools, const json *messages,
-                          llm_reply *r)
+/* A system prompt block, marked for the provider's cache. */
+static void add_system_block(json *sys, const char *text, size_t len)
 {
-    json *req = json_new(J_OBJECT), *sys, *blk, *resp = NULL, *content, *c;
+    json *blk = json_push(sys, json_new(J_OBJECT));
+    char *part = malloc(len + 1);
+
+    memcpy(part, text, len);
+    part[len] = 0;
+    json_set_str(blk, "type", "text");
+    json_set_str(blk, "text", part);
+    json_set_str(json_set(blk, "cache_control", json_new(J_OBJECT)), "type", "ephemeral");
+    free(part);
+}
+
+/*
+ * Mark the end of the conversation for the provider's cache too, so that the
+ * next round of the same chat reads all of it from there rather than sending
+ * it at full price again. The mark goes on the last block of the last
+ * message, made a block if it is plain text.
+ */
+static void mark_conversation(json *messages)
+{
+    json *last = messages ? messages->child : NULL, *content, *blk;
+
+    while (last && last->next)
+        last = last->next;
+    if (!last || !(content = json_get(last, "content")))
+        return;
+    if (content->type == J_STRING) {
+        json *arr = json_new(J_ARRAY);
+
+        blk = json_push(arr, json_new(J_OBJECT));
+        json_set_str(blk, "type", "text");
+        json_set_str(blk, "text", content->str);
+        content = json_set(last, "content", arr);
+    }
+    if (content->type != J_ARRAY || !content->child)
+        return;
+    for (blk = content->child; blk->next; blk = blk->next)
+        ;
+    if (blk->type == J_OBJECT)
+        json_set_str(json_set(blk, "cache_control", json_new(J_OBJECT)), "type", "ephemeral");
+}
+
+static int chat_anthropic(const config *cfg, const char *system, size_t fixed, const json *tools,
+                          const json *messages, llm_reply *r)
+{
+    json *req = json_new(J_OBJECT), *sys, *resp = NULL, *content, *c;
+    size_t len = strlen(system);
     WCHAR headers[1024];
     http_result h;
     sb_t text;
@@ -366,15 +411,19 @@ static int chat_anthropic(const config *cfg, const char *system, const json *too
 
     json_set_str(req, "model", model);
     json_set(req, "max_tokens", json_new_num(MAX_TOKENS));
-    /* the long, unchanging part of the prompt is marked for the provider's cache */
+    /* The prompt's unchanging start (rules and the reference's index) is a
+     * block of its own, so that chats share it in the provider's cache; the
+     * overview of this computer, which differs in each chat, comes after it. */
     sys = json_set(req, "system", json_new(J_ARRAY));
-    blk = json_push(sys, json_new(J_OBJECT));
-    json_set_str(blk, "type", "text");
-    json_set_str(blk, "text", system);
-    json_set_str(json_set(blk, "cache_control", json_new(J_OBJECT)), "type", "ephemeral");
+    if (fixed > 0 && fixed < len) {
+        add_system_block(sys, system, fixed);
+        add_system_block(sys, system + fixed, len - fixed);
+    } else {
+        add_system_block(sys, system, len);
+    }
     if (tools)
         json_set(req, "tools", json_copy(tools));
-    json_set(req, "messages", json_copy(messages));
+    mark_conversation(json_set(req, "messages", json_copy(messages)));
     body = json_dump(req);
     json_free(req);
     free(model);
@@ -414,8 +463,8 @@ static int chat_anthropic(const config *cfg, const char *system, const json *too
     }
     r->text = text.len ? sb_take(&text) : (sb_free(&text), NULL);
     r->truncated = json_str(resp, "stop_reason") && !strcmp(json_str(resp, "stop_reason"), "max_tokens");
-    r->in_tokens = (long)json_num(json_get(resp, "usage"), "input_tokens", 0) +
-                   (long)json_num(json_get(resp, "usage"), "cache_read_input_tokens", 0) +
+    r->cached_tokens = (long)json_num(json_get(resp, "usage"), "cache_read_input_tokens", 0);
+    r->in_tokens = (long)json_num(json_get(resp, "usage"), "input_tokens", 0) + r->cached_tokens +
                    (long)json_num(json_get(resp, "usage"), "cache_creation_input_tokens", 0);
     r->out_tokens = (long)json_num(json_get(resp, "usage"), "output_tokens", 0);
 
@@ -488,6 +537,9 @@ static int chat_openai(const config *cfg, const char *system, const json *tools,
     }
     r->in_tokens = (long)json_num(json_get(resp, "usage"), "prompt_tokens", 0);
     r->out_tokens = (long)json_num(json_get(resp, "usage"), "completion_tokens", 0);
+    /* providers that cache a repeated start of the prompt by themselves say how much */
+    r->cached_tokens = (long)json_num(json_get(json_get(resp, "usage"), "prompt_tokens_details"),
+                                      "cached_tokens", 0);
 
     /* keep the assistant's turn: role, content and tool calls */
     {
@@ -505,11 +557,12 @@ static int chat_openai(const config *cfg, const char *system, const json *tools,
     return 1;
 }
 
-int llm_chat(const config *cfg, const char *system, const json *tools, const json *messages, llm_reply *r)
+int llm_chat(const config *cfg, const char *system, size_t fixed, const json *tools, const json *messages,
+             llm_reply *r)
 {
     ZeroMemory(r, sizeof(*r));
     if (cfg->format == FMT_ANTHROPIC)
-        return chat_anthropic(cfg, system, tools, messages, r);
+        return chat_anthropic(cfg, system, fixed, tools, messages, r);
     return chat_openai(cfg, system, tools, messages, r);
 }
 

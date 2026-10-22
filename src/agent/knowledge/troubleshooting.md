@@ -2,6 +2,8 @@
 
 ## A program is "Not Responding"
 
+<!-- index guide-not-responding: finding it, memory, looking inside it with the debugger, ending it; the Firefox hang that 0.3 fixed -->
+
 1. `list_programs`: find it. Windows that stopped answering are marked
    NOT RESPONDING. Note its pid and memory use.
 2. Check memory in the overview. A live session keeps everything in memory;
@@ -12,12 +14,14 @@
    thread that stays in another wait (RtlWaitOnAddress,
    NtWaitForSingleObject...) is waiting for something else in the program.
 4. Firefox: WinCraft 0.3 fixed the Firefox startup hang (Wine's
-   GetProcessMitigationPolicy, see the patch notes). If Firefox still hangs,
+   GetProcessMitigationPolicy, `wine-fix-0003`). If Firefox still hangs,
    look at memory and at `read_log` desktop.
 5. To get going again: `end_program` (asks permission), then start the
    program again. Anything unsaved in it is lost.
 
 ## A program does not start, or closes at once
+
+<!-- index guide-wont-start: errors in the desktop log, missing DLLs and runtimes (Visual C++, .NET), crash reports, Compatibility Settings, what cannot work under Wine -->
 
 - `read_log` with name desktop and problems_only: Wine writes its errors
   there. "err:module:import_dll Library X not found" means a DLL the program
@@ -35,6 +39,8 @@
 
 ## Installing and removing programs
 
+<!-- index guide-installing: Download a Program and download_and_run, Start menu shortcuts, removing programs, what a live session keeps -->
+
 - *Download a Program* (desktop icon and Start menu) takes the web address
   of an installer (.exe or .msi), saves it in Downloads and runs it. Its
   *Get Firefox* button fetches Firefox.
@@ -46,6 +52,8 @@
 
 ## Network
 
+<!-- index guide-network: wired Ethernet only, check_network, DNS, QEMU's private network and port forwarding -->
+
 - Wired Ethernet with DHCP only; there is no Wi-Fi or Bluetooth.
 - `check_network`: no gateway means no connection (cable, or the virtual
   machine's network setting); a failing name lookup means DNS does not work.
@@ -56,6 +64,8 @@
   connections into WinCraft from elsewhere need port forwarding in QEMU.
 
 ## Display, graphics, sound
+
+<!-- index guide-display-sound: OpenGL (virgl, llvmpipe), no Vulkan or Direct3D 12, sound in a virtual machine, the text size of Windows programs (DPI, LogPixels) -->
 
 - Graphics: in a virtual machine with a virtio GPU and virgl, as `./wc run`
   starts it, OpenGL runs on the host's graphics card (the renderer is named
@@ -81,6 +91,8 @@
 
 ## Keyboard layout, clock
 
+<!-- index guide-keyboard-clock: the keyboard layout (boot option wc.kbd=), key repeat, the clock -->
+
 - The keyboard layout is chosen at boot with the option `wc.kbd=fr` (or de,
   gb...): press `e` on the boot menu entry and add it to the command line.
   There is no settings panel for it yet.
@@ -93,6 +105,8 @@
 - The clock shows UTC; there is no time zone setting yet.
 
 ## Windows settings that do nothing here
+
+<!-- index guide-settings-that-do-nothing: Windows settings Wine keeps in the registry without applying them, values Wine writes for itself, what the display server decides; read it before writing a setting -->
 
 Wine keeps many Windows settings in the registry without applying them, and
 WinCraft draws parts of the screen itself. Such a value can be read and
@@ -125,7 +139,7 @@ the WinCraft Agent.
 - Not read at all: the pointer scheme and size (`Control Panel\Cursors`,
   `CursorBaseSize` included). The Windows 10 and 11 accent colour
   (`Software\Microsoft\Windows\DWM`) colours only WinCraft's own taskbar
-  and menus (below); title bars take their colours from `ActiveTitle` and
+  and menus (`guide-desktop`); title bars take their colours from `ActiveTitle` and
   `GradientActiveTitle` in `Control Panel\Colors`.
 - Values Wine writes for itself, which look like settings:
   - under `Software\Wine\Fonts`: `LogPixels`, `Codepages`, and the
@@ -139,8 +153,7 @@ the WinCraft Agent.
     formats), but Wine rewrites it whenever the language of Windows programs
     changes, so changes made there are lost then.
 - Drawn or handled by WinCraft: the desktop, the taskbar, the Start menu and
-  window focus. They follow only the settings in "WinCraft's desktop and
-  taskbar" below; Explorer's other settings (its taskbar position in
+  window focus. They follow only the settings in `guide-desktop`; Explorer's other settings (its taskbar position in
   `StuckRects3`, desktop icon size or spacing, combining taskbar buttons) do
   nothing here yet.
 - Belonging to the display server, which Windows programs follow: key
@@ -151,6 +164,8 @@ the WinCraft Agent.
   pointer's speed has no effect on a virtual machine's tablet pointer.
 
 ## WinCraft's desktop and taskbar
+
+<!-- index guide-desktop: desktop picture and colour, light theme, accent colour, clock seconds, single-click icons, taskbar auto-hide and position, focus follows the mouse, notification icons, programs that start with Windows, Alt+Tab, window snapping (Windows+arrows), and the defaults that put these back -->
 
 WinCraft's desktop, taskbar and window manager follow these settings, all
 under `HKEY_CURRENT_USER`, which `set_registry_value` can change or delete.
@@ -222,6 +237,8 @@ Change them yourself; the WinCraft Agent is not needed.
 
 ## Files and drives
 
+<!-- index guide-files: drives C: and Z:, File Explorer, where programs' files are -->
+
 - C: is the Windows side of the person's home (Documents, Downloads,
   Program Files). Z: shows the whole underlying Linux file system.
 - *File Explorer* is on the desktop and in the Start menu.
@@ -234,6 +251,8 @@ Change them yourself; the WinCraft Agent is not needed.
 
 ## Live session or installed
 
+<!-- index guide-live-installed: what a live session keeps, Install WinCraft OS erases the whole disk, no update tool -->
+
 - The overview says which. Live: started from the ISO or USB, all changes in
   memory, lost at restart. Installed: changes are kept on the data
   partition.
@@ -242,5 +261,7 @@ Change them yourself; the WinCraft Agent is not needed.
 - There is no update tool yet: a new WinCraft release is a new system image.
 
 ## Power
+
+<!-- index guide-power: shutting down and restarting -->
 
 - Shut down and restart from the Start menu.

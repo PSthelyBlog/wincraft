@@ -101,14 +101,16 @@ typedef struct {
     tool_call calls[16];
     int ncalls;
     long in_tokens, out_tokens;
+    long cached_tokens;         /* of in_tokens, how many the provider read from its cache */
     int http_status;
     BOOL truncated;             /* cut off at the length limit: calls may be incomplete */
     char *error;                /* set on failure, human readable */
     json *turn;                 /* the model's turn, to add to the conversation */
 } llm_reply;
 
-/* Does not change `messages`: on success the caller adds r->turn to them. */
-int llm_chat(const config *cfg, const char *system, const json *tools, const json *messages,
+/* Does not change `messages`: on success the caller adds r->turn to them.
+ * The first `fixed` bytes of `system` are the same in every chat (0: none). */
+int llm_chat(const config *cfg, const char *system, size_t fixed, const json *tools, const json *messages,
              llm_reply *r);
 void llm_reply_free(llm_reply *r);
 /* After the tools ran: add their results to the conversation. */

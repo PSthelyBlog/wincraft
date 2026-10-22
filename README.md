@@ -199,9 +199,11 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   such as Ollama, llama.cpp or LM Studio on another computer (no key needed).
 - **What it knows.** WinCraft's own documentation for the exact version it
   ships in (this README, the changelog, the notes on the Wine fixes) and a
-  troubleshooting guide, plus an overview of this computer taken when the
-  chat starts: memory, storage, network, installed and running programs,
-  recent errors in the system logs.
+  troubleshooting guide. It starts each chat with their index and reads the
+  parts a question needs, so that each request carries only those. It also
+  gets an overview of this computer taken when the chat starts: memory,
+  storage, network, installed and running programs, recent errors in the
+  system logs.
 - **What it can do.** Look things up with a fixed set of tools: running
   programs and their windows, installed programs, the system logs, the
   registry, the network, crash reports, storage. Each look-up is listed in the
@@ -508,7 +510,7 @@ rootfs/wincraft.reg    registry defaults for the Windows environment
 wine/                  pinned Wine release and WinCraft's patches to it
 tools/                 toolbox entry, image assembler, build steps, VM runner,
                        test harnesses (xtest, qmp.py), component manifest,
-                       the assistant's knowledge pack (assistant-knowledge.sh)
+                       the assistant's indexed reference (assistant-knowledge.py)
 ```
 
 Each build also writes `out/wincraft-<version>-components.txt`: every
