@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8 — 2026-10-22
+
+WinCraft OS updates itself from GitHub.
+
+- **Updates without installing again.** An installed WinCraft takes the
+  newest release from its GitHub page. *Update WinCraft* in the Start menu
+  shows the version in use and the newest one, and *Update* downloads it
+  (about 270 MB), checks it against the SHA-256 published with it, and
+  installs it beside the version in use, to start at the next restart.
+  Your programs, files and features, on the data partition, are not
+  touched.
+- **The previous version is kept.** *Go back* starts it again from the
+  next restart, and the boot menu offers it as *WinCraft OS (previous
+  version, ...)* when it is 0.8 or later, for a version that does not start
+  properly.
+- **WinCraft Assistant can do it too**, when asked: it checks for a newer
+  release and reads its notes, and installs it or goes back, each time
+  after you allow it in a dialog. A long update shows its progress in its
+  status bar.
+- **How far to trust it:** the download comes only from
+  github.com/PSthelyBlog/wincraft, over HTTPS with the server's certificate
+  checked, and must match its published checksum, as a manual download
+  should. There is no signature beyond the project's GitHub account.
+- curl is in the image, for those downloads.
+- Installations from before 0.8 have no updater: install 0.8 once (it
+  erases the disk). From 0.8 on, new releases come by update.
+- Everything else is as in 0.7.25.
+
 ## 0.7.25 — 2026-10-22
 
 WinCraft Assistant knows the computer's graphics.
