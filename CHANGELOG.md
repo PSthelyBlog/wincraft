@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.25 — 2026-10-22
+
+WinCraft Assistant knows the computer's graphics.
+
+- **The graphics renderer.** The overview of the computer that starts each
+  chat now names the OpenGL renderer Windows programs get, checked the way
+  a game would: virgl for a virtual machine drawing on the host's graphics
+  card, llvmpipe for software rendering, or a real card's driver. Asked
+  whether a game used the graphics card, the assistant used to dig through
+  logs without finding out; now it answers at once, for less than half the
+  tokens.
+- The features of the computer are listed enabled first, with their
+  counts, so that the assistant does not miscount them.
+- A search of WinCraft's reference that no section matches in full now
+  shows the sections with most of its words, rather than nothing.
+- Everything else is as in 0.7.24.
+
 ## 0.7.24 — 2026-10-22
 
 WinCraft Assistant and the WinCraft Agent send far less with each request.
