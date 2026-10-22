@@ -202,8 +202,8 @@ network; WinCraft itself sends nothing anywhere until you set it up.
   troubleshooting guide. It starts each chat with their index and reads the
   parts a question needs, so that each request carries only those. It also
   gets an overview of this computer taken when the chat starts: memory,
-  storage, network, installed and running programs, recent errors in the
-  system logs.
+  storage, network, the graphics renderer, installed and running programs,
+  recent errors in the system logs.
 - **What it can do.** Look things up with a fixed set of tools: running
   programs and their windows, installed programs, the system logs, the
   registry, the network, crash reports, storage. Each look-up is listed in the

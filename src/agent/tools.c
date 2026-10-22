@@ -27,6 +27,7 @@
 #include <iphlpapi.h>
 #include <winhttp.h>
 #include <ctype.h>
+#include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -828,16 +829,23 @@ static void services_summary(sb_t *b)
 }
 
 /* The features added to this computer (README, "Features"). */
+/* The features, enabled ones first, each list with its count: a model is
+ * better at reading a count than at making one. */
 static void features_summary(sb_t *b)
 {
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(UNIX_ROOT L"\\var\\lib\\wincraft\\features\\*", &fd);
-    int n = 0;
+    sb_t on, off;
+    int non = 0, noff = 0;
 
+    sb_init(&on);
+    sb_init(&off);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             char path[160], *conf, *name;
             WCHAR marker[MAX_PATH];
+            BOOL enabled;
+            sb_t *list;
 
             if (fd.cFileName[0] == L'.' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
                 continue;
@@ -848,14 +856,112 @@ static void features_summary(sb_t *b)
                 name = NULL;
             _snwprintf(marker, MAX_PATH, UNIX_ROOT L"\\var\\lib\\wincraft\\features\\%s\\enabled", fd.cFileName);
             marker[MAX_PATH - 1] = 0;
-            sb_addf(b, "%s%S (\"%.*s\", %s)", n++ ? "; " : "", fd.cFileName,
-                    name ? (int)strcspn(name + 5, "\r\n") : 1, name ? name + 5 : "?",
-                    GetFileAttributesW(marker) != INVALID_FILE_ATTRIBUTES ? "enabled" : "disabled");
+            enabled = GetFileAttributesW(marker) != INVALID_FILE_ATTRIBUTES;
+            list = enabled ? &on : &off;
+            sb_addf(list, "%s%S (\"%.*s\")", (enabled ? non++ : noff++) ? "; " : "", fd.cFileName,
+                    name ? (int)strcspn(name + 5, "\r\n") : 1, name ? name + 5 : "?");
             free(conf);
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    sb_add(b, n ? ".\n" : "none.\n");
+    if (!non && !noff)
+        sb_add(b, "none.\n");
+    else
+        sb_addf(b, "%d, %d enabled and %d disabled.\n- Enabled (%d): %s\n- Disabled (%d): %s\n",
+                non + noff, non, noff, non, non ? on.s : "none", noff, noff ? off.s : "none");
+    sb_free(&on);
+    sb_free(&off);
+}
+
+/*
+ * The OpenGL renderer Windows programs get on this computer, as a game would
+ * find it: wcagent.exe /opengl opens a hidden window and an OpenGL context,
+ * writes "renderer|version" to its output and exits.
+ */
+int opengl_info(void)
+{
+    PIXELFORMATDESCRIPTOR pfd = { sizeof(pfd), 1, PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+                                  PFD_TYPE_RGBA, 32 };
+    WNDCLASSW wc;
+    HWND w;
+    HDC dc;
+    HGLRC rc;
+    char out[512];
+    DWORD put;
+    int pf, ok = 0;
+
+    ZeroMemory(&wc, sizeof(wc));
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"WinCraftAssistantOpenGL";
+    RegisterClassW(&wc);
+    w = CreateWindowW(wc.lpszClassName, L"", WS_POPUP, 0, 0, 16, 16, NULL, NULL, wc.hInstance, NULL);
+    dc = w ? GetDC(w) : NULL;
+    if (dc && (pf = ChoosePixelFormat(dc, &pfd)) && SetPixelFormat(dc, pf, &pfd) && (rc = wglCreateContext(dc))) {
+        if (wglMakeCurrent(dc, rc)) {
+            const char *renderer = (const char *)glGetString(GL_RENDERER);
+            const char *version = (const char *)glGetString(GL_VERSION);
+
+            snprintf(out, sizeof(out), "%s|%s", renderer ? renderer : "", version ? version : "");
+            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), out, (DWORD)strlen(out), &put, NULL);
+            ok = renderer != NULL;
+            wglMakeCurrent(NULL, NULL);
+        }
+        wglDeleteContext(rc);
+    }
+    if (dc)
+        ReleaseDC(w, dc);
+    if (w)
+        DestroyWindow(w);
+    return ok ? 0 : 1;
+}
+
+/* Asked once per process, in a child process: a graphics driver that hangs or
+ * crashes then cannot take the assistant along. NULL if it could not be told. */
+static const char *opengl_renderer(void)
+{
+    static char result[400];
+    static BOOL asked;
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    WCHAR self[MAX_PATH], cmd[MAX_PATH + 16];
+    HANDLE out_r, out_w;
+    char buf[512], *bar;
+    DWORD got, total = 0;
+
+    if (asked)
+        return result[0] ? result : NULL;
+    asked = TRUE;
+    if (!GetModuleFileNameW(NULL, self, MAX_PATH) || !CreatePipe(&out_r, &out_w, &sa, 0))
+        return NULL;
+    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+    _snwprintf(cmd, ARRAYSIZE(cmd), L"\"%s\" /opengl", self);
+    cmd[ARRAYSIZE(cmd) - 1] = 0;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = si.hStdError = out_w;
+    if (!CreateProcessW(self, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CloseHandle(out_r);
+        CloseHandle(out_w);
+        return NULL;
+    }
+    CloseHandle(out_w);
+    /* its answer is one short line, which fits in the pipe: wait first, then read */
+    if (WaitForSingleObject(pi.hProcess, 10000) == WAIT_TIMEOUT)
+        TerminateProcess(pi.hProcess, 1);
+    while (total < sizeof(buf) - 1 && ReadFile(out_r, buf + total, sizeof(buf) - 1 - total, &got, NULL) && got)
+        total += got;
+    buf[total] = 0;
+    CloseHandle(out_r);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (!(bar = strchr(buf, '|')) || bar == buf)
+        return NULL;
+    *bar = 0;
+    snprintf(result, sizeof(result), "%.250s, OpenGL %.120s", buf, bar[1] ? bar + 1 : "?");
+    return result;
 }
 
 char *system_snapshot(void)
@@ -938,6 +1044,12 @@ char *system_snapshot(void)
 
     wine_version = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
     sb_addf(&b, "Wine %s (64- and 32-bit Windows programs).\n", wine_version ? wine_version() : "?");
+    {
+        const char *gl = opengl_renderer();
+
+        sb_addf(&b, "Graphics for Windows programs: %s.\n",
+                gl ? gl : "the OpenGL renderer could not be checked");
+    }
     sb_add(&b, "Features added to this computer: ");
     features_summary(&b);
 
@@ -1080,21 +1192,28 @@ static void add_matching_lines(sb_t *b, const ref_section *r, const char *words)
     }
 }
 
-static BOOL section_matches(const ref_section *r, const char *words)
+/* How many of the words the section contains; *total: how many words. */
+static int words_matched(const ref_section *r, const char *words, int *total)
 {
     const char *w = words;
+    int n = 0, t = 0;
 
     while (*w) {
-        size_t n;
+        size_t len;
 
         while (*w == ' ')
             w++;
-        n = strcspn(w, " ");
-        if (n && !section_has(r, w, n))
-            return FALSE;
-        w += n;
+        len = strcspn(w, " ");
+        if (len) {
+            t++;
+            if (section_has(r, w, len))
+                n++;
+        }
+        w += len;
     }
-    return TRUE;
+    if (total)
+        *total = t;
+    return n;
 }
 
 /* Adds a section if it fits; returns FALSE if it did not. */
@@ -1150,8 +1269,18 @@ static void read_reference(sb_t *b, const json *args, char **label)
         }
     }
     if (search && *search) {
+        int words = 0, best = 0, need;
+
+        /* the sections with all of the words; failing that, those with the most */
         for (i = 0; i < g_nrefs; i++) {
-            if (!section_matches(&g_refs[i], search))
+            int n = words_matched(&g_refs[i], search, &words);
+
+            if (n > best)
+                best = n;
+        }
+        need = best;
+        for (i = 0; best && i < g_nrefs; i++) {
+            if (words_matched(&g_refs[i], search, NULL) != need)
                 continue;
             if (++found <= SEARCH_SECTIONS)
                 add_matching_lines(b, &g_refs[i], search);
@@ -1159,7 +1288,10 @@ static void read_reference(sb_t *b, const json *args, char **label)
                 sb_addf(&left, "%s%s", left.len ? ", " : "", g_refs[i].id);
         }
         if (!found)
-            sb_addf(b, "No section contains all of: %s\n", search);
+            sb_addf(b, "No section contains any of: %s\n", search);
+        else if (best < words)
+            sb_addf(b, "\nNo section contains all of the words. These contain %d of the %d, with the lines "
+                       "where they appear. Read the ones you need by id.\n", best, words);
         else
             sb_add(b, "\nThese are the sections that contain all of the words, with the lines where they "
                       "appear. Read the ones you need by id.\n");

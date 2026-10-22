@@ -151,6 +151,8 @@ const tool_def *tool_find(const char *name);
  * receives a short line for the transcript, e.g. "Looked at running programs". */
 char *tool_run(const tool_def *t, const json *args, approve_fn approve, void *ctx, char **label);
 char *system_snapshot(void);
+/* wcagent.exe /opengl: print the OpenGL renderer and exit (tools.c). */
+int opengl_info(void);
 char *knowledge_text(void);
 
 /* ---- the model's Markdown, as the chat shows it (mdtext.c) ---- */

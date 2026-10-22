@@ -1725,6 +1725,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *cmdline, int show)
     BOOL have;
 
     g_inst = inst;
+    if (StrStrIW(cmdline, L"/opengl"))      /* the overview's graphics check, in a process of its own */
+        return opengl_info();
     g_agent_mode = StrStrIW(cmdline, L"/agent") != NULL;
     g_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     mutex = CreateMutexW(NULL, TRUE, main_class());

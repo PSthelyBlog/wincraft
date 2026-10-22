@@ -71,6 +71,12 @@
   starts it, OpenGL runs on the host's graphics card (the renderer is named
   "virgl"). Elsewhere it is software OpenGL (llvmpipe): fine for
   applications, slow for 3D games. No Vulkan, so no Direct3D 12.
+- The overview's "Graphics for Windows programs" line is the OpenGL renderer
+  Windows programs get on this computer, checked when the chat started: a
+  name starting with virgl is a virtual machine drawing on the host's
+  graphics card (named in brackets); llvmpipe is software rendering on the
+  processor; any other name is a real graphics card's driver. When it could
+  not be checked, say so rather than guess.
 - There is no display or sound settings panel yet. Sound works in a virtual
   machine (QEMU's Intel HD Audio, played by the host's sound server) and is
   untested on real hardware. When a program plays but nothing is heard in a
