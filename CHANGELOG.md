@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.2 — 2026-10-24
+
+A desktop picture rewritten under the same name shows at once, and features
+are dated when you approve them.
+
+- **Fixed: a new picture written over the wallpaper's file stayed hidden**
+  until the next login. The desktop redrew only when the wallpaper's file
+  name changed, so a program or feature that saves each day's picture under
+  the same name kept showing the old one. The desktop now notices within two
+  seconds that the picture was written again and shows it, as Windows does.
+  A picture that is deleted stays on screen.
+- **Fixed: the date shown for a feature added by the WinCraft Agent** could
+  be off by hours: it was the time the agent wrote in its files, sometimes
+  in UTC. *WinCraft Features* now shows when you approved the feature, in
+  local time, with the WinCraft version it was added on.
+- Everything else is as in 0.8.1.
+
 ## 0.8.1 — 2026-10-22
 
 WinCraft Assistant now says correctly whether the boot menu offers the
