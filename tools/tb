@@ -10,6 +10,13 @@
 #   tools/tb                   interactive shell
 #
 # Env: TB_GUI=1 binds the host Wayland/X sockets (used to show the QEMU window).
+#
+# The QEMU window draws the VM's 3D (virgl) with the host's GPU, through the
+# toolbox's Mesa. Mesa cannot use a GPU run by NVIDIA's own driver and falls
+# back to drawing on the CPU (llvmpipe); so with that driver loaded, TB_GUI=1
+# also binds in the host's NVIDIA EGL libraries, which match its kernel
+# module, and the Wayland and GBM platforms they need. TB_HOSTGL=0 leaves
+# them out.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,6 +25,7 @@ TB="$PROJECT/build/toolbox"
 
 export TB PROJECT
 export TB_GUI="${TB_GUI:-0}"
+export TB_HOSTGL="${TB_HOSTGL:-1}"
 export TB_RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export TB_WAYLAND="${WAYLAND_DISPLAY:-}"
 export TB_DISPLAY="${DISPLAY:-}"
@@ -48,6 +56,29 @@ if [ "$TB_GUI" = 1 ]; then
     mkdir -p "$TB/tmp/.X11-unix"
     mount --rbind /tmp/.X11-unix "$TB/tmp/.X11-unix"
     genv+=(DISPLAY="$TB_DISPLAY")
+  fi
+  # NVIDIA: the host'"'"'s own EGL driver, in /run/hostgl (see above)
+  lib=
+  for l in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu; do
+    [ -e "$l/libEGL_nvidia.so.0" ] && { lib=$l; break; }
+  done
+  if [ "$TB_HOSTGL" = 1 ] && [ -e /proc/driver/nvidia/version ] && [ -n "$lib" ]; then
+    d="$TB/run/hostgl"
+    mkdir -p "$d/egl_external_platform.d" "$d/gbm"
+    for f in "$lib"/libEGL_nvidia.so* "$lib"/libnvidia-*.so*; do
+      [ -e "$f" ] || continue
+      : > "$d/${f##*/}"
+      mount --bind "$f" "$d/${f##*/}"
+    done
+    if [ -e "$lib/gbm/nvidia-drm_gbm.so" ]; then
+      : > "$d/gbm/nvidia-drm_gbm.so"
+      mount --bind "$lib/gbm/nvidia-drm_gbm.so" "$d/gbm/nvidia-drm_gbm.so"
+    fi
+    cp /usr/share/egl/egl_external_platform.d/*nvidia*.json "$d/egl_external_platform.d/" 2>/dev/null || true
+    echo "{\"file_format_version\": \"1.0.0\", \"ICD\": {\"library_path\": \"libEGL_nvidia.so.0\"}}" > "$d/nvidia.json"
+    genv+=(LD_LIBRARY_PATH=/run/hostgl __EGL_VENDOR_LIBRARY_FILENAMES=/run/hostgl/nvidia.json
+           __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=/run/hostgl/egl_external_platform.d
+           GBM_BACKENDS_PATH=/run/hostgl/gbm)
   fi
 fi
 cd "$TB"

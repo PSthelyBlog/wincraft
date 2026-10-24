@@ -368,6 +368,10 @@ guest keeps QEMU's clipboard channel and the desktop's clipboard in step.
 
 The window's graphics adapter is a virtio GPU with 3D acceleration (virgl),
 drawn by your graphics card through its render node (`/dev/dri/renderD*`).
+The build toolbox's Mesa cannot drive a card that runs NVIDIA's own driver,
+so with that driver loaded `./wc run` uses the host's NVIDIA EGL libraries
+for the window instead (`TB_HOSTGL=0` turns that off); tested with a GeForce
+RTX 4070 and driver 615.
 The guest takes the size of the window when it starts; resizing the window
 later scales the picture. `--no-gl` gives the plain VGA adapter at a fixed
 `--res` (default 1280x800), drawn in software.
