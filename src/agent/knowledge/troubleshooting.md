@@ -182,7 +182,8 @@ Change them yourself; the WinCraft Agent is not needed.
   Windows or Linux path of a BMP, JPG, PNG or GIF picture, such as
   `C:\users\user\Pictures\sea.jpg`; empty for none) and `WallpaperStyle`
   (text: `10` fill the screen, the default; `6` fit; `2` stretch; `0` centre,
-  or tile with `TileWallpaper` = `1`).
+  or tile with `TileWallpaper` = `1`). A picture written again under the
+  same name shows within two seconds, as on Windows.
 - Plain desktop colour, used when `Wallpaper` is empty: `Control Panel\Colors`,
   `Background` (text, `R G B`). WinCraft's own value, `11 21 48`, means its
   usual blue background.

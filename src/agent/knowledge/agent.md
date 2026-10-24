@@ -24,9 +24,9 @@ features work, and read only what the task needs.
    place that survives the sandbox (`readme-features`):
    - `feature.conf` with `name=` (short, for a list), `description=` (one or
      two plain sentences for the person: what it does, and how to change or
-     undo it), `created=` (date and time, `YYYY-MM-DD HH:MM`),
-     `by=WinCraft Agent`, `version=` (from `/etc/wincraft/version`) and
-     `task=` (the person's request, in one line).
+     undo it) and `task=` (the person's request, in one line). WinCraft adds
+     `created=`, `by=` and `version=` itself when the person approves the
+     feature.
    - its files under `files/`: `settings.d/*.conf`, `hooks/boot.d/*.sh`,
      `hooks/session.d/*.sh`, `services.d/*.service`, `registry.d/*.reg`,
      `environment.d/*.conf` (variables for the whole desktop session, such

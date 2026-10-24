@@ -174,12 +174,19 @@ commit)
         { result "$c" "error: the feature holds something other than files and folders"; exit 1; }
     mkdir -p "$features"
     rm -rf "$features/.$id.new"
+    # When it was added, by whom and on which version are WinCraft's to say:
+    # the agent's clock reads UTC in the sandbox, and it may not say at all.
+    now=$(date '+%Y-%m-%d %H:%M:%S')
+    conf=$features/.$id.new/feature.conf
     cp -R "$src" "$features/.$id.new" &&
+        { grep -v -E '^(created|by|version)=' "$conf"
+          echo "created=${now%:*}"; echo "by=WinCraft Agent"; echo "version=$(cat /etc/wincraft/version)"
+        } > "$conf.tmp" && mv "$conf.tmp" "$conf" &&
         chown -R 0:0 "$features/.$id.new" && chmod -R go-w "$features/.$id.new" &&
         rm -f "$features/.$id.new/enabled" &&
         mv "$features/.$id.new" "$features/$id" ||
         { rm -rf "$features/.$id.new"; result "$c" "error: could not copy the feature"; exit 1; }
-    echo "$(date '+%Y-%m-%d %H:%M:%S') add $id (WinCraft Agent, task $task)" >> /var/lib/wincraft/features.log
+    echo "$now add $id (WinCraft Agent, task $task)" >> /var/lib/wincraft/features.log
     /usr/lib/wincraft/priv.d/feature enable "$id"
     result "$c" "$(tail -1 /run/wincraft/feature.status)"
     ;;

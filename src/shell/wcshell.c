@@ -665,6 +665,22 @@ int WINAPI GdipDrawImageRectI(void *graphics, void *image, INT x, INT y, INT wid
 int WINAPI GdipDeleteGraphics(void *graphics);
 int WINAPI GdipDisposeImage(void *image);
 
+/* The file behind a wallpaper path: a Windows one, %variables% and all, or a
+ * Linux one ("/home/..."). */
+static void picture_file(const WCHAR *path, WCHAR *file, int size)
+{
+    if (path[0] == '/') {
+        WCHAR *p;
+
+        _snwprintf(file, size, L"\\\\?\\unix%ls", path);
+        file[size - 1] = 0;
+        for (p = file + 8; *p; p++)
+            if (*p == '/') *p = '\\';
+    } else {
+        ExpandEnvironmentStringsW(path, file, size);
+    }
+}
+
 /* Draw the picture at path over the whole screen the way Windows' styles
  * do; FALSE when it cannot be read. A Linux path ("/home/...") works too. */
 static BOOL draw_picture(HDC dc, const WCHAR *path, int style, BOOL tile)
@@ -682,16 +698,7 @@ static BOOL draw_picture(HDC dc, const WCHAR *path, int style, BOOL tile)
         if (GdiplusStartup(&token, &input, NULL))
             return FALSE;
     }
-    if (path[0] == '/') {
-        WCHAR *p;
-
-        _snwprintf(file, ARRAYSIZE(file), L"\\\\?\\unix%ls", path);
-        file[ARRAYSIZE(file) - 1] = 0;
-        for (p = file + 8; *p; p++)
-            if (*p == '/') *p = '\\';
-    } else {
-        ExpandEnvironmentStringsW(path, file, ARRAYSIZE(file));
-    }
+    picture_file(path, file, ARRAYSIZE(file));
     if (GdipLoadImageFromFile(file, &image) || !image)
         return FALSE;
     GdipGetImageWidth(image, &iw);
@@ -741,7 +748,21 @@ static void tray_tips(void);
 static struct icon_item *g_icons;
 static int g_nicons, g_icon_sel = -1, g_icon_pressed = -1;
 static HBITMAP g_wallpaper;
+static FILETIME g_wallpaper_time;   /* when the picture drawn was last written */
 static DWORD g_icons_stamp;
+
+/* When the wallpaper's picture was last written; zero when there is none. */
+static FILETIME wallpaper_time(void)
+{
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    WCHAR file[MAX_PATH + 16];
+    FILETIME none = { 0, 0 };
+
+    if (!g_prefs.wallpaper[0])
+        return none;
+    picture_file(g_prefs.wallpaper, file, ARRAYSIZE(file));
+    return GetFileAttributesExW(file, GetFileExInfoStandard, &d) ? d.ftLastWriteTime : none;
+}
 
 static void make_wallpaper(void)
 {
@@ -762,6 +783,7 @@ static void make_wallpaper(void)
     if (g_wallpaper)
         DeleteObject(g_wallpaper);
     g_wallpaper = CreateCompatibleBitmap(screen, g_sw, g_sh);
+    g_wallpaper_time = wallpaper_time();
     old = SelectObject(dc, g_wallpaper);
 
     /* Windows' own background settings: a picture, or a plain colour. */
@@ -1023,8 +1045,19 @@ static LRESULT CALLBACK desktop_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         paint_desktop(hwnd);
         return 0;
     case WM_TIMER:
-        if (wp == TIMER_ICONS && scan_desktop(NULL, NULL) != g_icons_stamp)
-            load_icons();
+        if (wp == TIMER_ICONS) {
+            FILETIME ft = wallpaper_time();
+
+            if (scan_desktop(NULL, NULL) != g_icons_stamp)
+                load_icons();
+            /* The picture written again under the same name, as programs
+             * that change the wallpaper every day do: Windows shows the new
+             * one, and so does this. A picture that is gone stays shown. */
+            if ((ft.dwLowDateTime || ft.dwHighDateTime) && CompareFileTime(&ft, &g_wallpaper_time)) {
+                make_wallpaper();
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+        }
         return 0;
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN: {
