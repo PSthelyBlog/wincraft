@@ -277,8 +277,41 @@ mount_root() {
     mkdir -p $R/run/user/1000 && chown 1000:1000 $R/run/user/1000
 }
 
+# The root filesystem's /dev is the host's own (mount_root): an image made
+# with it still mounted would carry the host's devices and the shared memory
+# of its programs, and "rm -rf $R" would reach into them. In the toolbox's
+# user namespace the host's mounts under /dev are locked to it, so it can be
+# detached only as a whole (umount -l), not taken apart (umount -R failed on
+# /dev/mqueue, and images were built with the host's /dev in them). Nothing
+# may still run in $R: the processes chrooted into it are
+# waited for (and ended after ten seconds), and the build stops if anything
+# is left mounted in $R.
+chrooted() {    # the processes whose root is $R
+    local p
+    for p in /proc/[0-9]*; do
+        [ "$(readlink "$p/root" 2>/dev/null)" = "$R" ] && echo "${p#/proc/}"
+    done
+    return 0
+}
+
 umount_root() {
-    umount -R $R/proc $R/dev $R/tmp $R/run 2>/dev/null || true
+    local n=0 left
+    while [ -n "$(chrooted)" ]; do
+        n=$((n + 1))
+        if [ $n -gt 50 ]; then
+            chrooted | xargs -r kill -KILL 2>/dev/null || true
+            sleep 1
+            break
+        fi
+        sleep 0.2
+    done
+    umount -l $R/proc $R/dev $R/tmp $R/run 2>/dev/null || true
+    left=$(awk -v r="$R/" 'index($2, r) == 1 { print $2 }' /proc/self/mounts)
+    if [ -n "$left" ]; then
+        echo "rootfs: still mounted in $R, which must not reach the image:" >&2
+        echo "$left" | sed 's/^/        /' >&2
+        exit 1
+    fi
 }
 
 # The locales of rootfs/locales.txt, for the language a feature can give the
@@ -392,7 +425,8 @@ step_iso() {
     say "Compressing system image"
     rm -rf $I && mkdir -p $I/boot/limine $I/EFI/BOOT $I/wincraft
     umount_root
-    mksquashfs $R $I/wincraft/system.sfs -noappend -quiet -no-progress \
+    # and even so, nothing of a filesystem mounted in it (umount_root)
+    mksquashfs $R $I/wincraft/system.sfs -noappend -quiet -no-progress -one-file-system \
         -comp zstd -Xcompression-level 19 -b 1M -no-xattrs
 
     say "Building ISO"
