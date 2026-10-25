@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.3 — 2026-10-25
+
+The windows that ask the system for something wait for their own answer.
+
+- **Fixed: *WinCraft Features* could say "Done" for a change it had not
+  made**, when another change to the features was under way at the same
+  moment, such as the WinCraft Agent enabling the feature you had just
+  approved: the second change was dropped, and the window read the first
+  one's answer. Every request to the system now gets an answer of its own,
+  and a change asked for while another is under way waits for it, then is
+  made.
+- **Fixed: a window could wait for ever** when the system service it asked
+  did not answer, and *WinCraft Features* then refused to close. *WinCraft
+  Features*, *Install WinCraft OS* and *Update WinCraft* now say after 15
+  seconds that the system service did not respond, and a service stopped
+  half-way says so.
+- Two update checks at the same moment, from *Update WinCraft* and from
+  WinCraft Assistant, each get their own answer. While an update is being
+  installed, another request waits half a minute, then says that an update
+  is in progress.
+- For building from source: **the build no longer copies the build
+  computer's `/dev` into the image.** The toolbox could not take apart the
+  host's `/dev`, bound into the root filesystem while the Windows
+  environment is made, and the failure went unnoticed: an image built on a
+  computer where that happens held the host's device nodes and the shared
+  memory its programs had in `/dev/shm`. The published 0.8.2 has an empty
+  `/dev`. The build now detaches it as a whole, and stops if anything is
+  left mounted. It also stops when a file that carries the version (the
+  boot menu, `/etc/os-release`, the shell's and the assistant's resources)
+  does not say what `VERSION` says. `./wc run` draws
+  the virtual machine's 3D with an NVIDIA card run by NVIDIA's own driver
+  when the screen is on it, instead of on the CPU, and keeps the toolbox's
+  Mesa on a laptop whose screen is on its AMD or Intel graphics beside an
+  NVIDIA card, where NVIDIA's libraries stopped QEMU as the guest started
+  drawing (`TB_HOSTGL=1` and `TB_HOSTGL=0` choose).
+- Everything else is as in 0.8.2.
+
 ## 0.8.2 — 2026-10-24
 
 A desktop picture rewritten under the same name shows at once, and features
