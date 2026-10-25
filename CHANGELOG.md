@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.4 — 2026-10-25
+
+Google Chrome starts again after it was closed maximized, its bubbles show,
+and menus lose the black frame round them.
+
+- **Fixed: Google Chrome crashed at every start after it was closed
+  maximized**, before any window appeared, until its settings no longer said
+  maximized. Chrome maximizes its window while still setting it up, and Wine
+  showed and activated the hidden window there, which Windows does not; a
+  WinCraft fix to Wine (`wine/patches/0005`) leaves an already maximized
+  window as it is.
+- **Fixed: Chrome's bubbles were blank white rectangles**: *Restore pages?*,
+  the profile and password bubbles. Chrome draws them from its graphics
+  process, and Wine drew what another process sent to such a window off
+  screen, where nothing showed it (`wine/patches/0006`). As *Restore pages?*
+  could not be seen or closed, Chrome also went on recording every exit as a
+  crash; it no longer does once the bubble is closed.
+- **Menus and pop-ups no longer have a black frame round them.** Their
+  shadows and rounded corners are see-through, and nothing blended them with
+  what is behind them: the window manager now does (compositing). It pauses
+  while a window fills the screen, a game or a video in full screen, so those
+  run as before; `WCWM_COMPOSITE=0` in a feature's `environment.d` turns it
+  off. Chrome's menus, tooltips and hover cards show their shadows; Firefox's
+  menus and Chrome's bubbles keep black corners, as they are drawn without
+  the see-through part that a compositor needs.
+- For building from source: **a Wine patch may now change a module's
+  Unix-side library**, such as the X11 display driver `winex11.so`. The build
+  rebuilds it with the package's own options, and stops unless it needs the
+  same libraries as the packaged one and no newer glibc than the image has.
+  The build also checks that every library WinCraft's own programs link
+  against is in the image (`tools/assemble-rootfs.py`, `NATIVE`): `wcwm` now
+  needs `libXdamage`.
+- Everything else is as in 0.8.3.
+
 ## 0.8.3 — 2026-10-25
 
 The windows that ask the system for something wait for their own answer.
