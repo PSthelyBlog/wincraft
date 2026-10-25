@@ -68,6 +68,7 @@ WINE_INDEX = {
     "wine-fix-0003": "Firefox no longer starts \"Not Responding\" at random",
     "wine-fix-0004": "a click on a program's notification icon runs its default action again when the "
                      "program is not in English (Ditto)",
+    "wine-fix-0005": "Google Chrome no longer crashes at every start after it was closed maximized",
 }
 
 

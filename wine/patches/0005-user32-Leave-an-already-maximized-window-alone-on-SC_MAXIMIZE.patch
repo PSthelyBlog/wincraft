@@ -1,0 +1,52 @@
+user32: Leave an already maximized window alone on SC_MAXIMIZE.
+
+DefWindowProc handled WM_SYSCOMMAND/SC_MAXIMIZE with ShowWindow(SW_MAXIMIZE)
+even when the window was maximized already, so a hidden window created with
+WS_MAXIMIZE was shown and activated by it. Google Chrome does exactly this
+when it restores a window that was closed maximized: it creates the browser
+window hidden with WS_MAXIMIZE, and sends it SC_MAXIMIZE from Widget::Init,
+before its setup is complete. The activation reaches
+BrowserView::OnWidgetActivationChanged, which calls
+ExtensionKeybindingRegistryViews::From(browser)->OnHostActivationChanged on
+a registry not created yet: a NULL dereference (read of 0xa0) in the
+browser process. Chrome 156 then crashes at every start, without a window,
+until its profile no longer says maximized. Chrome runs maximized on Windows,
+so Windows does not activate the window at that point.
+
+A visible maximized window was already left as it is (ShowWindow returns
+early), so only hidden maximized windows behave differently. Measured with a
+test program on WinCraft 0.8.3 (Wine 11.19), after sending SC_MAXIMIZE:
+
+  window                       before            after
+  hidden, created maximized    shown, activated  hidden, not activated
+  hidden, created normal       shown, activated  shown, activated
+  visible, already maximized   unchanged         unchanged
+
+With this patch, Chrome 156 starts maximized from a profile that crashed it
+before, and maximize, restore, closing maximized and starting again work.
+
+The check is made in user32, before the call into win32u, because WinCraft
+can only rebuild Windows-side modules: so for an already maximized window
+the WH_CBT HCBT_SYSCOMMAND hook is not called and the display driver does not
+see the command. The proper fix belongs in win32u's handle_sys_command, and
+the Windows behaviour should be confirmed by a conformance test run on
+Windows (hidden WS_MAXIMIZE window, SC_MAXIMIZE: visible? activated?).
+
+Status: not for WineHQ as it stands. This patch was written with an LLM,
+and WineHQ does not accept LLM-generated code. No WineHQ bug describes
+this yet (bugs.winehq.org searched for "chrome maximized" and SC_MAXIMIZE
+on 2026-10-25).
+---
+--- a/dlls/user32/nonclient.c
++++ b/dlls/user32/nonclient.c
+@@ -65,6 +65,10 @@ BOOL WINAPI DrawCaptionTempA (HWND hwnd, HDC hdc, const RECT *rect, HFONT hFont,
+  */
+ LRESULT NC_HandleSysCommand( HWND hwnd, WPARAM wParam, LPARAM lParam )
+ {
++    /* An already maximized window stays as it is, even when hidden:
++     * SW_MAXIMIZE would show and activate it */
++    if ((wParam & 0xfff0) == SC_MAXIMIZE && IsZoomed( hwnd )) return 0;
++
+     if (!NtUserMessageCall( hwnd, WM_SYSCOMMAND, wParam, lParam, 0, NtUserDefWindowProc, FALSE ))
+         return 0;
+ 
