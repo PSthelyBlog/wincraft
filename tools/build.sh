@@ -14,6 +14,44 @@ ISO=$W/out/wincraft-$VERSION-x86_64.iso
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
+# -------------------------------------------------------------- version
+# Some files carry the version themselves rather than read VERSION: the boot
+# menu, the system's name for itself, and WinCraft's Windows programs with
+# their resources and manifests. A release changes them all; this stops the
+# build when one was missed.
+version_lines() {
+    local v=${VERSION//./\\.} four c f
+    four=$(echo "$VERSION.0.0.0" | cut -d. -f1-4)    # Windows wants four numbers: 0.8 -> 0.8.0.0
+    c=${four//./,} four=${four//./\\.}
+    cat <<EOF
+boot/limine.conf ^interface_branding: WinCraft OS $v\$
+rootfs/overlay/etc/issue ^WinCraft OS $v \\(
+rootfs/overlay/etc/os-release ^PRETTY_NAME="WinCraft OS $v"\$
+rootfs/overlay/etc/os-release ^VERSION="$v"\$
+rootfs/overlay/etc/os-release ^VERSION_ID=$v\$
+src/shell/wcshell.c ^#define WC_VERSION +L"$v"\$
+src/agent/agent.h ^#define WC_VERSION +L"$v"\$
+EOF
+    for f in src/shell/wcshell src/agent/wcagent; do
+        cat <<EOF
+$f.rc ^FILEVERSION $c\$
+$f.rc ^PRODUCTVERSION $c\$
+$f.rc "FileVersion", "$v"\$
+$f.rc "ProductVersion", "$v"\$
+$f.manifest name="WinCraft\.[A-Za-z]+" version="$four"
+EOF
+    done
+}
+
+check_version() {
+    local file pattern bad=0
+    while read -r file pattern; do
+        grep -Eq -- "$pattern" $W/$file ||
+            { echo "version: $file does not say $VERSION where it should (/$pattern/)" >&2; bad=1; }
+    done < <(version_lines)
+    [ $bad = 0 ] || { echo "version: set the files above to VERSION ($VERSION)" >&2; exit 1; }
+}
+
 # --------------------------------------------------------------- kernel
 step_kernel() {
     if [ ! -d "$KSRC" ]; then
@@ -266,6 +304,7 @@ build_locales() {
 }
 
 step_rootfs() {
+    check_version
     stage_ready || step_stage
     say "Assembling root filesystem"
     umount_root
@@ -340,6 +379,7 @@ step_rootfs() {
 
 # ------------------------------------------------------------------ iso
 step_iso() {
+    check_version
     [ -f $KSRC/arch/x86/boot/bzImage ] || step_kernel
     [ -x $R/usr/bin/wcinit ] || step_rootfs
 
