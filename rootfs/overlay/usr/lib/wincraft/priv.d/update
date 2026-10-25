@@ -3,14 +3,16 @@
 # started by wcinit on behalf of the desktop ("wcctl priv update ...": the
 # "Update WinCraft" window, or WinCraft Assistant after the person allowed it).
 #
-#   update check              the installed version, the newest release, the
+#   update [request=<name>] ACTION, where ACTION is one of:
+#
+#   check                     the installed version, the newest release, the
 #                             one installed for the next start and the one
 #                             kept from before the last update, and whether
 #                             the boot menu offers that one
-#   update install <version>  download the newest release, check it and
+#   install <version>         download the newest release, check it and
 #                             install it for the next start; the version in
 #                             use now is kept as the previous one
-#   update previous           go back to the previous version (next start);
+#   previous                  go back to the previous version (next start);
 #                             the version left becomes the previous one
 #
 # Releases come only from https://github.com/PSthelyBlog/wincraft, fetched by
@@ -23,9 +25,11 @@
 # knows wc.image=previous (WinCraft 0.8 and later). The data partition, with
 # the person's programs, files and features, is not touched.
 #
-# Progress goes to /run/wincraft/update.status, one line at a time; the last
-# line is "checked", "done" or "error: <reason>". While one of these runs,
-# another does nothing, and leaves the status to the first.
+# Progress goes to /run/wincraft/requests/<name>, for the window that named
+# the request (16 to 32 hex digits), or else to /run/wincraft/update.status:
+# one line at a time, the last one "checked", "done" or "error: <reason>".
+# One runs at a time: a request waits half a minute for the one before to
+# end, a check taking seconds and an installation minutes.
 PATH=/usr/bin
 REPO=PSthelyBlog/wincraft
 status=/run/wincraft/update.status
@@ -34,12 +38,33 @@ work=/var/cache/wincraft-update
 esp=
 esp_was=        # how the boot partition was mounted: "ro" at /live/medium, or "" (mounted here)
 
-mkdir "$lock" 2>/dev/null || exit 0
-trap 'rmdir "$lock" 2>/dev/null' EXIT
+say()  { echo "$*" >> "$status"; }
+
+case "$1" in
+request=*)
+    req=${1#request=}
+    shift
+    case "$req" in *[!a-f0-9]*) exit 2 ;; esac
+    [ ${#req} -ge 16 ] && [ ${#req} -le 32 ] || exit 2
+    status=/run/wincraft/requests/$req
+    ;;
+esac
+mkdir -p /run/wincraft/requests
 : > "$status"
 chmod 644 "$status"
+# whatever ends this helper, its last line says how
+trap 'case "$(tail -n 1 "$status")" in done|checked|"error: "*) ;; *) say "error: stopped before the end" ;; esac' EXIT
+trap 'exit 1' HUP INT TERM
 
-say()  { echo "$*" >> "$status"; }
+# before anything that cleans up: what the one before is working with is its own
+exec 9> "$lock"
+n=0
+until flock -n 9; do
+    n=$((n + 1))
+    [ $n -le 30 ] || { say "error: another update is in progress"; exit 1; }
+    sleep 1
+done
+
 cleanup() {
     umount "$work/iso" 2>/dev/null
     rm -rf "$work"

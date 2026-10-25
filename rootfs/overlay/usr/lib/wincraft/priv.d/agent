@@ -187,8 +187,11 @@ commit)
         mv "$features/.$id.new" "$features/$id" ||
         { rm -rf "$features/.$id.new"; result "$c" "error: could not copy the feature"; exit 1; }
     echo "$now add $id (WinCraft Agent, task $task)" >> /var/lib/wincraft/features.log
-    /usr/lib/wincraft/priv.d/feature enable "$id"
-    result "$c" "$(tail -1 /run/wincraft/feature.status)"
+    # a request of its own, so that a change made at the same moment in
+    # WinCraft Features can never answer for it
+    feature_req=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+    /usr/lib/wincraft/priv.d/feature "request=$feature_req" enable "$id"
+    result "$c" "$(tail -n 1 "/run/wincraft/requests/$feature_req")"
     ;;
 stop)
     $umount "$root" 2>/dev/null || $umount -l "$root"

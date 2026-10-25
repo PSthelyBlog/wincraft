@@ -1996,7 +1996,6 @@ static void ask_agent(sb_t *b, const json *args, approve_fn approve, void *ctx, 
 static char *fetch_page(const char *start, size_t *len, char *ctype, size_t ctsize, char *final,
                         size_t finalsize, char *err, size_t errsize);
 
-#define UPDATE_STATUS_W UNIX_ROOT L"\\run\\wincraft\\update.status"
 #define RELEASES_URL    "https://github.com/PSthelyBlog/wincraft/releases"
 
 struct update_state {
@@ -2020,33 +2019,30 @@ static BOOL version_newer(const char *a, const char *b)
     return FALSE;
 }
 
-static BOOL update_status_time(FILETIME *ft)
-{
-    WIN32_FILE_ATTRIBUTE_DATA d;
-
-    if (!GetFileAttributesExW(UPDATE_STATUS_W, GetFileExInfoStandard, &d))
-        return FALSE;
-    *ft = d.ftLastWriteTime;
-    return TRUE;
-}
-
 /*
  * Run priv.d/update and wait for its last line: "checked", "done" or
- * "error: ...". Its other lines are progress, shown in the status bar.
- * Returns the whole status (caller frees), or NULL if it gave no last line
- * in time or the person pressed Stop (*stopped).
+ * "error: ...". Its other lines are progress, shown in the status bar. The
+ * request has a name of its own, which the helper writes its progress
+ * under (/run/wincraft/requests/<name>), so that the answer to another
+ * request, such as the Update WinCraft window's, is never taken for this
+ * one's. Returns the whole status (caller frees), or NULL if it gave no last
+ * line in time or the person pressed Stop (*stopped).
  */
 static char *run_update(const WCHAR *args, DWORD wait_ms, BOOL *stopped)
 {
-    FILETIME before = { 0, 0 }, now;
+    static LONG count;
+    LARGE_INTEGER t;
     WCHAR cmd[160], w[200];
     DWORD start = GetTickCount();
-    char *text = NULL, *last;
+    char name[24], path[64], *text = NULL, *last;
 
     if (stopped)
         *stopped = FALSE;
-    update_status_time(&before);
-    _snwprintf(cmd, ARRAYSIZE(cmd), L"priv update %s", args);
+    QueryPerformanceCounter(&t);
+    snprintf(name, sizeof(name), "%08lx%08lx%04lx", (unsigned long)(t.HighPart ^ GetTickCount()),
+             (unsigned long)t.LowPart, (unsigned long)((GetCurrentProcessId() + InterlockedIncrement(&count)) & 0xffff));
+    snprintf(path, sizeof(path), "/run/wincraft/requests/%s", name);
+    _snwprintf(cmd, ARRAYSIZE(cmd), L"priv update request=%S %s", name, args);
     cmd[ARRAYSIZE(cmd) - 1] = 0;
     if (!run_native(L"/usr/bin/wcctl", cmd, 0))
         return NULL;
@@ -2056,12 +2052,12 @@ static char *run_update(const WCHAR *args, DWORD wait_ms, BOOL *stopped)
             *stopped = TRUE;
             break;
         }
-        /* a fresh status: the helper empties the file as it starts */
-        if (!update_status_time(&now) || !CompareFileTime(&now, &before))
-            continue;
         free(text);
-        if (!(text = read_unix_file("/run/wincraft/update.status", 64 * 1024)))
+        if (!(text = read_unix_file(path, 64 * 1024))) {
+            if (GetTickCount() - start > 15000)     /* the helper never started */
+                break;
             continue;
+        }
         trim(text);
         last = strrchr(text, '\n');
         last = last ? last + 1 : text;

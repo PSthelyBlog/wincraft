@@ -1,6 +1,7 @@
 #!/bin/sh
 # Enable, disable or remove a feature. Runs as root, started by wcinit for the
-# WinCraft Features window: "wcctl priv feature enable|disable|remove <id>".
+# WinCraft Features window:
+# "wcctl priv feature [request=<name>] enable|disable|remove <id>".
 #
 # A feature is a folder /var/lib/wincraft/features/<id>/:
 #   feature.conf                     name=, description=, created=, by=, version=
@@ -21,8 +22,11 @@
 # boot: only a folder that root owns, with nothing in it that anyone else can
 # write and no symbolic links, is accepted. Features are made by root.
 #
-# Progress goes to /run/wincraft/feature.status, whose last line is "done" or
-# "error: <reason>"; every change is recorded in /var/lib/wincraft/features.log.
+# Progress goes to /run/wincraft/requests/<name>, for the window that named
+# the request (16 to 32 hex digits), or else to /run/wincraft/feature.status:
+# one line at a time, the last one "done" or "error: <reason>". Changes are
+# made one at a time, a request waiting for the one before. Every change is
+# recorded in /var/lib/wincraft/features.log.
 PATH=/usr/bin
 base=/var/lib/wincraft/features
 journal=/var/lib/wincraft/features.log
@@ -34,11 +38,24 @@ say()  { echo "$*" >> "$status"; }
 fail() { say "error: $*"; exit 1; }
 note() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$journal"; }
 
-mkdir -p /run/wincraft
-exec 9> /run/wincraft/feature.lock
-flock -n 9 || exit 1                     # one change at a time
+case "$1" in
+request=*)
+    req=${1#request=}
+    shift
+    case "$req" in *[!a-f0-9]*) exit 2 ;; esac
+    [ ${#req} -ge 16 ] && [ ${#req} -le 32 ] || exit 2
+    status=/run/wincraft/requests/$req
+    ;;
+esac
+mkdir -p /run/wincraft/requests
 : > "$status"
 chmod 644 "$status"
+# whatever ends this helper, its last line says how
+trap 'case "$(tail -n 1 "$status")" in done|"error: "*) ;; *) say "error: stopped before the end" ;; esac' EXIT
+trap 'exit 1' HUP INT TERM
+
+exec 9> /run/wincraft/feature.lock
+flock 9                                  # one change at a time
 
 action=$1 id=$2
 case "$action" in enable|disable|remove) ;; *) fail "unknown action: $action" ;; esac

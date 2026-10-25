@@ -2,7 +2,7 @@
 # Install WinCraft OS to a disk. Runs as root, started by wcinit on behalf of
 # the installer window ("wcctl priv install <disk>").
 #
-#   usage: install <disk> [<MiB> [<name>]]
+#   usage: install [request=<name>] <disk> [<MiB> [<name>]]
 #          e.g. install sda   or   install sda 40000 MYDATA
 #   <disk>  a name from /sys/block
 #   <MiB>   the space WinCraft takes from the start of the disk, both
@@ -18,8 +18,9 @@
 # An installation CD (or a virtual machine's ISO) is ejected when the computer
 # next restarts or shuts down (wcinit, /run/wincraft/eject).
 #
-# Progress goes to /run/wincraft/install.status, one line at a time; the last
-# line is "done" or "error: <reason>".
+# Progress goes to /run/wincraft/requests/<name>, for the window that named
+# the request (16 to 32 hex digits), or else to /run/wincraft/install.status:
+# one line at a time, the last one "done" or "error: <reason>".
 PATH=/usr/bin
 status=/run/wincraft/install.status
 src=/live/medium
@@ -28,8 +29,21 @@ mnt=/run/wincraft/target
 say()  { echo "$*" >> "$status"; }
 fail() { say "error: $*"; umount "$mnt" 2>/dev/null; exit 1; }
 
+case "$1" in
+request=*)
+    req=${1#request=}
+    shift
+    case "$req" in *[!a-f0-9]*) exit 2 ;; esac
+    [ ${#req} -ge 16 ] && [ ${#req} -le 32 ] || exit 2
+    status=/run/wincraft/requests/$req
+    ;;
+esac
+mkdir -p /run/wincraft/requests
 : > "$status"
 chmod 644 "$status"
+# whatever ends this helper, its last line says how
+trap 'case "$(tail -n 1 "$status")" in done|"error: "*) ;; *) say "error: stopped before the end" ;; esac' EXIT
+trap 'exit 1' HUP INT TERM
 
 name=$1 space=${2:-0} label=${3:-WINCRAFT_DATA}
 case "$name" in ''|*[!a-z0-9]*) fail "invalid disk name" ;; esac

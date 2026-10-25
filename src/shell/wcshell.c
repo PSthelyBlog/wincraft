@@ -396,6 +396,49 @@ static BOOL run_native(const WCHAR *cmdline, BOOL wait)
     return FALSE;
 }
 
+/*
+ * A request to one of the system's privileged helpers (priv.d), through
+ * wcinit: "wcctl priv <helper> request=<name> <args>". The helper writes its
+ * progress to /run/wincraft/requests/<name>, a file of this request alone,
+ * so that the answer to another one, earlier or at the same moment, is never
+ * taken for this one's.
+ */
+struct request {
+    WCHAR name[24];
+    DWORD sent;                 /* GetTickCount() */
+};
+
+#define REQUEST_WAIT    15000   /* ms for the helper to start answering */
+
+static BOOL request_send(struct request *r, const WCHAR *helper, const WCHAR *args)
+{
+    static LONG count;
+    WCHAR cmd[400];
+    LARGE_INTEGER t;
+
+    QueryPerformanceCounter(&t);
+    wsprintfW(r->name, L"%08lx%08lx%04lx", (unsigned long)(t.HighPart ^ GetTickCount()), (unsigned long)t.LowPart,
+              (unsigned long)((GetCurrentProcessId() + InterlockedIncrement(&count)) & 0xffff));
+    wsprintfW(cmd, L"/usr/bin/wcctl priv %s request=%s %s", helper, r->name, args);
+    r->sent = GetTickCount();
+    return run_native(cmd, FALSE);
+}
+
+/* The helper's progress so far, a line per step, in buf. When there is none
+ * yet and it is too late for the helper to start, a last line that says so. */
+static BOOL request_status(const struct request *r, char *buf, DWORD size)
+{
+    WCHAR path[64];
+
+    wsprintfW(path, L"/run/wincraft/requests/%s", r->name);
+    if (read_native_file(path, buf, size))
+        return buf[0] != 0;
+    if (GetTickCount() - r->sent < REQUEST_WAIT)
+        return FALSE;
+    lstrcpynA(buf, "error: the system service did not respond", size);
+    return TRUE;
+}
+
 static DWORD WINAPI power_thread(void *arg)
 {
     BOOL restart = (BOOL)(INT_PTR)arg;
@@ -2984,6 +3027,7 @@ struct disk {
 static struct disk g_disks[16];
 static int g_ndisks;
 static BOOL g_installing;
+static struct request g_install_req;
 
 /* Read a small text file from the host side (sysfs, /run). */
 static BOOL read_native_file(const WCHAR *unix_path, char *buf, DWORD size)
@@ -3098,8 +3142,8 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (MessageBoxW(hwnd, text, L"Erase disk and install",
                             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
                 return 0;
-            wsprintfW(text, L"/usr/bin/wcctl priv install %s %u %s", g_disks[sel].name, mib, data_name);
-            if (!run_native(text, FALSE)) {
+            wsprintfW(text, L"%s %u %s", g_disks[sel].name, mib, data_name);
+            if (!request_send(&g_install_req, L"install", text)) {
                 SetDlgItemTextW(hwnd, IDC_INSTALL_STATUS, L"The system service did not respond.");
                 return 0;
             }
@@ -3118,7 +3162,7 @@ static LRESULT CALLBACK install_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         WCHAR text[300];
         int i;
 
-        if (!read_native_file(L"/run/wincraft/install.status", buf, sizeof(buf)) || !buf[0])
+        if (!request_status(&g_install_req, buf, sizeof(buf)))
             return 0;
         line = strrchr(buf, '\n');
         line = line ? line + 1 : buf;
@@ -3264,6 +3308,7 @@ struct feature {
 static struct feature g_feats[64];
 static int g_nfeats;
 static BOOL g_feat_busy;
+static struct request g_feat_req;
 
 /* The value of "key=" in a feature.conf, as text for the window. */
 static void feat_value(const char *conf, const char *key, WCHAR *out, int size)
@@ -3370,10 +3415,10 @@ static void feat_fill(HWND hwnd, int sel)
 /* Ask the system to enable, disable or remove a feature; the timer follows. */
 static void feat_run(HWND hwnd, const WCHAR *action, const struct feature *f)
 {
-    WCHAR cmd[160];
+    WCHAR args[80];
 
-    wsprintfW(cmd, L"/usr/bin/wcctl priv feature %s %s", action, f->id);
-    if (!run_native(cmd, FALSE)) {
+    wsprintfW(args, L"%s %s", action, f->id);
+    if (!request_send(&g_feat_req, L"feature", args)) {
         SetDlgItemTextW(hwnd, IDC_FEAT_STATUS, L"The system service did not respond.");
         return;
     }
@@ -3410,7 +3455,7 @@ static LRESULT CALLBACK features_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         char buf[1024], *line;
         WCHAR text[300];
 
-        if (!read_native_file(L"/run/wincraft/feature.status", buf, sizeof(buf)) || !buf[0])
+        if (!request_status(&g_feat_req, buf, sizeof(buf)))
             return 0;
         line = strrchr(buf, '\n');
         line = line ? line + 1 : buf;
@@ -3519,30 +3564,12 @@ static int features_tool(HINSTANCE inst)
 
 enum { IDC_UPD_INFO = 600, IDC_UPD_INSTALL, IDC_UPD_NOTES, IDC_UPD_PREVIOUS };
 
-#define UPDATE_STATUS   L"/run/wincraft/update.status"
-
 static struct {
     char system[16], installed[32], next[32], previous[32], latest[32], error[300];
     BOOL previous_boot;     /* the boot menu offers the previous version */
     BOOL busy, checking;
-    FILETIME started;
+    struct request req;
 } g_upd;
-
-/* When a file under / was last written. */
-static BOOL native_mtime(const WCHAR *unix_path, FILETIME *ft)
-{
-    WIN32_FILE_ATTRIBUTE_DATA d;
-    WCHAR path[MAX_PATH], *p;
-
-    wsprintfW(path, L"\\\\?\\unix%s", unix_path);
-    for (p = path + 8; *p; p++)
-        if (*p == L'/')
-            *p = L'\\';
-    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &d))
-        return FALSE;
-    *ft = d.ftLastWriteTime;
-    return TRUE;
-}
 
 /* Is version a newer than b? Numbers separated by dots. */
 static BOOL version_newer(const char *a, const char *b)
@@ -3614,12 +3641,7 @@ static void upd_show(HWND hwnd)
 /* Have the system run priv.d/update; the timer follows its status. */
 static void upd_start(HWND hwnd, const WCHAR *args, BOOL checking)
 {
-    WCHAR cmd[120];
-
-    ZeroMemory(&g_upd.started, sizeof(g_upd.started));
-    native_mtime(UPDATE_STATUS, &g_upd.started);
-    wsprintfW(cmd, L"/usr/bin/wcctl priv update %s", args);
-    if (!run_native(cmd, FALSE)) {
+    if (!request_send(&g_upd.req, L"update", args)) {
         SetDlgItemTextW(hwnd, IDC_UPD_INFO, L"The system service did not respond.");
         return;
     }
@@ -3663,11 +3685,8 @@ static LRESULT CALLBACK update_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER: {
         char buf[4096], *line, *next, *last;
         WCHAR text[400];
-        FILETIME now;
 
-        /* a fresh status only: the helper empties the file as it starts */
-        if (!native_mtime(UPDATE_STATUS, &now) || !CompareFileTime(&now, &g_upd.started) ||
-            !read_native_file(UPDATE_STATUS, buf, sizeof(buf)) || !buf[0])
+        if (!request_status(&g_upd.req, buf, sizeof(buf)))
             return 0;
         while (buf[0] && buf[strlen(buf) - 1] == '\n')
             buf[strlen(buf) - 1] = 0;
