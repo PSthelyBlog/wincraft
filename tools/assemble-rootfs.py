@@ -7,7 +7,8 @@ far more than the OS needs. This script selects, file by file, what ships:
   1. every file of the packages listed in WHOLE,
   2. the listed files of the packages in PARTIAL,
   3. unowned, generated paths listed in EXTRA,
-  4. shared libraries Wine opens with dlopen() (DLOPEN),
+  4. shared libraries Wine opens with dlopen() (DLOPEN), and those WinCraft's
+     own programs need (NATIVE),
   5. the transitive closure of DT_NEEDED libraries of all of the above -
      only the library files themselves, not the packages they come from.
 
@@ -77,6 +78,12 @@ DLOPEN = [
     "libgssapi_krb5.so.2", "libkrb5.so.3", "libudev.so.1",
     "libwayland-client.so.0", "libwayland-egl.so.1", "libxkbcommon.so.0",
     "libxkbregistry.so.0", "libgcc_s.so.1", "libresolv.so.2",
+]
+
+# Libraries WinCraft's own programs (src/, built after this script runs) link
+# against that nothing above brings in. build.sh checks their DT_NEEDED.
+NATIVE = [
+    "libXdamage.so.1",          # wcwm: compositing
 ]
 
 # Dropped even when selected above.
@@ -231,10 +238,10 @@ class Assembler:
                     self.add(rel)
         for rel in EXTRA:
             self.add_tree(rel)
-        for soname in DLOPEN:
+        for soname in DLOPEN + NATIVE:
             rel = self.resolve_lib(soname, "usr/lib/x", [])
             if not rel:
-                sys.exit(f"error: dlopen library {soname} is not staged")
+                sys.exit(f"error: library {soname} is not staged")
             self.add(rel)
 
         self.selected = {r for r in self.selected

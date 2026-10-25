@@ -131,7 +131,8 @@ step_native() {
     mkdir -p $B/native
     gcc -O2 -static -Wall -Wextra -o $B/native/wcinit $W/src/init/wcinit.c
     gcc -O2 -Wall -Wextra -o $B/native/wcctl $W/src/tools/wcctl.c
-    gcc -O2 -Wall -Wextra -Wno-unused-parameter -o $B/native/wcwm $W/src/wm/wcwm.c -lX11 -lXi
+    gcc -O2 -Wall -Wextra -Wno-unused-parameter -o $B/native/wcwm $W/src/wm/wcwm.c \
+        -lX11 -lXi -lXext -lXcomposite -lXdamage -lXfixes -lXrender
     gcc -O2 -Wall -Wextra -Wno-unused-parameter -o $B/native/wcclip $W/src/tools/wcclip.c -lX11 -lXfixes
     strip $B/native/*
 }
@@ -400,6 +401,15 @@ step_rootfs() {
     say "Building native components"
     step_native
     install -m755 $B/native/* $R/usr/bin/
+    # They are installed after the root filesystem's libraries were chosen
+    # (assemble-rootfs.py, NATIVE): every library they need must be there.
+    local f lib
+    for f in $B/native/*; do
+        for lib in $(objdump -p $f | awk '$1 == "NEEDED" { print $2 }'); do
+            [ -e $R/usr/lib/$lib ] ||
+                { echo "native: ${f##*/} needs $lib, which the root filesystem lacks (tools/assemble-rootfs.py, NATIVE)" >&2; exit 1; }
+        done
+    done
     ln -sf wcinit $R/usr/bin/init
     for applet in $($R/usr/bin/busybox --list); do
         [ -e $R/usr/bin/$applet ] || ln -s busybox $R/usr/bin/$applet

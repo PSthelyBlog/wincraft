@@ -63,7 +63,7 @@ projects that already do the hard parts, and writes everything in between:
 | Windows API | Wine 11 (WoW64 build: 64- and 32-bit programs), with Wine Mono for .NET programs | binary packages, plus the fixes in `wine/patches` |
 | Display | X.Org server, Mesa (software OpenGL) | binary packages |
 | **Init** | `wcinit`: PID 1, service supervision, shutdown, a small privilege broker | **written for WinCraft** (`src/init`) |
-| **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area, moving and sizing, snapping. Draws nothing: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
+| **Window manager** | `wcwm`: stacking layers, focus, minimise/maximise, work area, moving and sizing, snapping, and compositing, so that the see-through parts of windows (the shadows and rounded corners of menus and pop-ups) blend with what is behind them; it pauses while an opaque window fills the screen, and `WCWM_COMPOSITE=0` in a feature's `environment.d` turns it off. Draws nothing of its own: Windows programs frame their own windows | **written for WinCraft** (`src/wm`) |
 | **Shell** | `wcshell.exe`: desktop, taskbar, Start menu with search, Run, *Download a Program*, installer front end. A native Win32 program | **written for WinCraft** (`src/shell`) |
 | **Assistant and Agent** | `wcagent.exe`: *WinCraft Assistant*, a chat about WinCraft and this computer with the AI model you choose, and *WinCraft Agent*, which builds features for this computer in a sandbox. A native Win32 program | **written for WinCraft** (`src/agent`) |
 | **Boot, install, build** | early userspace, live/installed boot, disk installer, image assembler | **written for WinCraft** |

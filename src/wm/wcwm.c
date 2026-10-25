@@ -2,8 +2,10 @@
  * wcwm - the WinCraft window manager.
  *
  * Windows programs draw their own title bars and borders and move and size
- * themselves, so this window manager draws nothing at all. It does only what
- * the display server needs someone to decide:
+ * themselves, so this window manager draws nothing of its own. It composites
+ * (see "compositing"), so that the see-through parts of windows blend with
+ * what is behind them, and does only what the display server needs someone
+ * to decide:
  *
  *   - stacking, in layers:  menus/tooltips > active full-screen window >
  *                           taskbar and always-on-top windows >
@@ -41,6 +43,11 @@
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XInput2.h>
+#include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xdamage.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/Xrender.h>
+#include <X11/extensions/shape.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -1524,6 +1531,483 @@ static void focus_pending(void)
         focus_client(c);
 }
 
+/* ---------------------------------------------------------- compositing */
+
+/*
+ * Windows programs draw parts of some windows see-through: the shadows and
+ * rounded corners of menus and pop-ups, which Wine gives a 32-bit visual with
+ * an alpha channel. Only a compositing manager blends those with what is
+ * behind them; without one, the display server shows them black. So the
+ * top-level windows are redirected off screen, and the parts of the screen
+ * that changed are painted again from them: opaque windows from the top down,
+ * each hiding what is below it, then the see-through ones blended over them
+ * from the bottom up.
+ *
+ * While an opaque window fills the screen with nothing see-through above it
+ * (a game, a video in full screen), compositing pauses and windows draw
+ * straight to the screen again, so it costs them nothing. WCWM_COMPOSITE=0 in
+ * the environment turns it off altogether.
+ */
+struct cwin {
+    struct cwin *next;          /* stacking order: bottom first, as XQueryTree lists them */
+    Window win;
+    int x, y, w, h, bw;         /* outer geometry, border width */
+    Window above;               /* the sibling under it, to notice restacking */
+    XRenderPictFormat *format;  /* NULL for an input-only window */
+    int argb;                   /* has an alpha channel */
+    int viewable;
+    int damaged;                /* has drawn since it was mapped */
+    int shaped;                 /* has a bounding shape of its own */
+    Damage damage;
+    Picture picture;            /* its contents, while redirected */
+    XserverRegion shape;        /* where it is on the screen (cached) */
+    XserverRegion clip;         /* during a paint: the part of it to paint */
+};
+
+static int comp_ok;             /* the extensions are there and nobody else composites */
+static int compositing;         /* windows are redirected and painted here */
+static int damage_event, shape_event = -1;
+static struct cwin *cwins;
+static int cwins_stale;         /* the stacking order changed: ask the server */
+static XserverRegion pending;   /* the parts of the screen to paint again */
+static Picture root_picture, back_picture;
+static Pixmap back_pixmap;
+static const XRenderColor background = { 0x0b0b, 0x1515, 0x3030, 0xffff };    /* #0b1530 */
+
+static struct cwin *find_cwin(Window win)
+{
+    struct cwin *cw;
+
+    for (cw = cwins; cw; cw = cw->next)
+        if (cw->win == win)
+            return cw;
+    return NULL;
+}
+
+static void add_damage(XserverRegion region)
+{
+    if (pending) {
+        XFixesUnionRegion(dpy, pending, pending, region);
+        XFixesDestroyRegion(dpy, region);
+    } else {
+        pending = region;
+    }
+}
+
+static void damage_screen(void)
+{
+    XRectangle r = { 0, 0, screen_w, screen_h };
+
+    add_damage(XFixesCreateRegion(dpy, &r, 1));
+}
+
+/* Where the window is on the screen, shape included. */
+static XserverRegion cwin_shape(struct cwin *cw)
+{
+    if (!cw->shape) {
+        cw->shape = XFixesCreateRegionFromWindow(dpy, cw->win, WindowRegionBounding);
+        XFixesTranslateRegion(dpy, cw->shape, cw->x + cw->bw, cw->y + cw->bw);
+    }
+    return cw->shape;
+}
+
+/* Paint again where the window is, or was: from what is known of it, as it
+ * may be gone already. */
+static void damage_cwin(struct cwin *cw)
+{
+    XRectangle r = { cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw };
+    XserverRegion region;
+
+    if (cw->shape) {
+        region = XFixesCreateRegion(dpy, NULL, 0);
+        XFixesCopyRegion(dpy, region, cw->shape);
+    } else {
+        region = XFixesCreateRegion(dpy, &r, 1);
+    }
+    add_damage(region);
+}
+
+static void forget_contents(struct cwin *cw)
+{
+    if (cw->picture)
+        XRenderFreePicture(dpy, cw->picture);
+    if (cw->shape)
+        XFixesDestroyRegion(dpy, cw->shape);
+    cw->picture = None;
+    cw->shape = None;
+}
+
+static void read_shaped(struct cwin *cw)
+{
+    int bounding, clip, x, y, clip_x, clip_y;
+    unsigned int w, h, clip_w, clip_h;
+
+    cw->shaped = shape_event >= 0 &&
+                 XShapeQueryExtents(dpy, cw->win, &bounding, &x, &y, &w, &h,
+                                    &clip, &clip_x, &clip_y, &clip_w, &clip_h) &&
+                 bounding;
+}
+
+static struct cwin *new_cwin(Window win)
+{
+    XWindowAttributes wa;
+    struct cwin *cw;
+
+    if (!XGetWindowAttributes(dpy, win, &wa) || !(cw = calloc(1, sizeof(*cw))))
+        return NULL;
+    cw->win = win;
+    cw->x = wa.x;
+    cw->y = wa.y;
+    cw->w = wa.width;
+    cw->h = wa.height;
+    cw->bw = wa.border_width;
+    cw->viewable = wa.map_state == IsViewable;
+    cw->damaged = cw->viewable;         /* already on the screen */
+    if (wa.class == InputOutput) {
+        cw->format = XRenderFindVisualFormat(dpy, wa.visual);
+        cw->argb = cw->format && cw->format->type == PictTypeDirect && cw->format->direct.alphaMask;
+        cw->damage = XDamageCreate(dpy, win, XDamageReportNonEmpty);
+        if (shape_event >= 0)
+            XShapeSelectInput(dpy, win, ShapeNotifyMask);
+        read_shaped(cw);
+    }
+    return cw;
+}
+
+static void free_cwin(struct cwin *cw, int destroyed)
+{
+    if (cw->viewable && cw->format && compositing)
+        damage_cwin(cw);
+    forget_contents(cw);
+    if (cw->damage && !destroyed)
+        XDamageDestroy(dpy, cw->damage);
+    free(cw);
+}
+
+/* The top-level windows in the server's stacking order. */
+static void update_cwins(void)
+{
+    Window dummy, *children = NULL;
+    unsigned int count = 0, i;
+    struct cwin *list = NULL, **tail = &list, *cw, **p;
+
+    cwins_stale = 0;
+    if (!XQueryTree(dpy, root, &dummy, &dummy, &children, &count))
+        return;
+    for (i = 0; i < count; i++) {
+        for (p = &cwins; *p && (*p)->win != children[i]; p = &(*p)->next)
+            ;
+        if ((cw = *p))
+            *p = cw->next;
+        else if (!(cw = new_cwin(children[i])))
+            continue;
+        cw->next = NULL;
+        *tail = cw;
+        tail = &cw->next;
+    }
+    while ((cw = cwins)) {      /* gone without our hearing of it */
+        cwins = cw->next;
+        free_cwin(cw, 1);
+    }
+    cwins = list;
+    if (children)
+        XFree(children);
+}
+
+static void make_back_buffer(void)
+{
+    Visual *visual = DefaultVisual(dpy, DefaultScreen(dpy));
+
+    if (back_picture)
+        XRenderFreePicture(dpy, back_picture);
+    if (back_pixmap)
+        XFreePixmap(dpy, back_pixmap);
+    back_pixmap = XCreatePixmap(dpy, root, screen_w, screen_h, DefaultDepth(dpy, DefaultScreen(dpy)));
+    back_picture = XRenderCreatePicture(dpy, back_pixmap, XRenderFindVisualFormat(dpy, visual), 0, NULL);
+}
+
+static int on_screen(struct cwin *cw)
+{
+    return cw->x < screen_w && cw->y < screen_h &&
+           cw->x + cw->w + 2 * cw->bw > 0 && cw->y + cw->h + 2 * cw->bw > 0;
+}
+
+/* Whether compositing can pause: an opaque window other than the desktop
+ * fills the screen, and nothing above it is see-through (opaque ones, such as
+ * Wine's 1x1 helper windows, look the same without), so the screen does too. */
+static int can_pause(void)
+{
+    struct cwin *cw;
+    int covered = 0;
+
+    for (cw = cwins; cw; cw = cw->next) {
+        if (!cw->viewable || !cw->format || !on_screen(cw))
+            continue;
+        if (cw->argb)
+            covered = 0;
+        else if (cw->win != desktop_win && !cw->shaped && cw->x <= 0 && cw->y <= 0 &&
+                 cw->x + cw->w + 2 * cw->bw >= screen_w && cw->y + cw->h + 2 * cw->bw >= screen_h)
+            covered = 1;
+    }
+    return covered;
+}
+
+static void set_compositing(int on)
+{
+    struct cwin *cw;
+
+    fprintf(stderr, "wcwm: compositing %s\n", on ? "on" : "paused: a full-screen window is on top");
+    compositing = on;
+    if (on) {
+        XCompositeRedirectSubwindows(dpy, root, CompositeRedirectManual);
+        /* the server gives each window what was on the screen there */
+        for (cw = cwins; cw; cw = cw->next)
+            cw->damaged = cw->viewable;
+        damage_screen();
+    } else {
+        XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
+        for (cw = cwins; cw; cw = cw->next)
+            forget_contents(cw);
+        if (pending)
+            XFixesDestroyRegion(dpy, pending);
+        pending = None;
+    }
+}
+
+static void paint_cwin(struct cwin *cw, int op)
+{
+    XRenderPictureAttributes pa;
+    Pixmap pixmap;
+
+    if (!cw->picture) {
+        pixmap = XCompositeNameWindowPixmap(dpy, cw->win);
+        pa.subwindow_mode = IncludeInferiors;
+        cw->picture = XRenderCreatePicture(dpy, pixmap, cw->format, CPSubwindowMode, &pa);
+        XFreePixmap(dpy, pixmap);       /* the picture keeps it */
+    }
+    XFixesSetPictureClipRegion(dpy, back_picture, 0, 0, cw->clip);
+    XRenderComposite(dpy, op, cw->picture, None, back_picture, 0, 0, 0, 0,
+                     cw->x, cw->y, cw->w + 2 * cw->bw, cw->h + 2 * cw->bw);
+}
+
+static void paint(void)
+{
+    XserverRegion region = pending, rest;
+    struct cwin *cw, *list[MAX_WINDOWS];
+    int n = 0, i;
+
+    pending = None;
+    for (cw = cwins; cw && n < MAX_WINDOWS; cw = cw->next)
+        if (cw->viewable && cw->damaged && cw->format && on_screen(cw))
+            list[n++] = cw;
+    rest = XFixesCreateRegion(dpy, NULL, 0);
+    XFixesCopyRegion(dpy, rest, region);
+    /* the opaque windows, from the top down: each hides what is below it */
+    for (i = n - 1; i >= 0; i--) {
+        cw = list[i];
+        cw->clip = XFixesCreateRegion(dpy, NULL, 0);
+        XFixesIntersectRegion(dpy, cw->clip, rest, cwin_shape(cw));
+        if (!cw->argb) {
+            XFixesSubtractRegion(dpy, rest, rest, cw->clip);
+            paint_cwin(cw, PictOpSrc);
+        }
+    }
+    /* where no window is, the background */
+    XFixesSetPictureClipRegion(dpy, back_picture, 0, 0, rest);
+    XRenderFillRectangle(dpy, PictOpSrc, back_picture, &background, 0, 0, screen_w, screen_h);
+    /* the see-through windows, from the bottom up, over what is below them */
+    for (i = 0; i < n; i++) {
+        cw = list[i];
+        if (cw->argb)
+            paint_cwin(cw, PictOpOver);
+        XFixesDestroyRegion(dpy, cw->clip);
+        cw->clip = None;
+    }
+    XFixesSetPictureClipRegion(dpy, back_picture, 0, 0, None);
+    XFixesSetPictureClipRegion(dpy, root_picture, 0, 0, region);
+    XRenderComposite(dpy, PictOpSrc, back_picture, None, root_picture, 0, 0, 0, 0, 0, 0,
+                     screen_w, screen_h);
+    XFixesDestroyRegion(dpy, rest);
+    XFixesDestroyRegion(dpy, region);
+}
+
+/* Once the events that came together are handled: stop or resume
+ * compositing if that changed, and paint what changed. */
+static void comp_update(void)
+{
+    int wanted;
+
+    if (!comp_ok)
+        return;
+    if (cwins_stale)
+        update_cwins();
+    wanted = !can_pause();
+    if (wanted != compositing)
+        set_compositing(wanted);
+    if (compositing && pending)
+        paint();
+    XFlush(dpy);
+}
+
+static void comp_event(XEvent *ev)
+{
+    struct cwin *cw;
+
+    if (!comp_ok)
+        return;
+    if (ev->type == damage_event + XDamageNotify) {
+        XDamageNotifyEvent *e = (XDamageNotifyEvent *)ev;
+        XserverRegion parts;
+
+        if (!(cw = find_cwin(e->drawable)))
+            return;
+        if (!compositing || !cw->damaged) {
+            /* drawn for the first time since mapped: all of it, then */
+            XDamageSubtract(dpy, cw->damage, None, None);
+            cw->damaged = 1;
+            if (compositing)
+                damage_cwin(cw);
+            return;
+        }
+        parts = XFixesCreateRegion(dpy, NULL, 0);
+        XDamageSubtract(dpy, cw->damage, None, parts);
+        XFixesTranslateRegion(dpy, parts, cw->x + cw->bw, cw->y + cw->bw);
+        add_damage(parts);
+        return;
+    }
+    if (ev->type == shape_event + ShapeNotify) {
+        XShapeEvent *e = (XShapeEvent *)ev;
+
+        if (e->kind != ShapeBounding || !(cw = find_cwin(e->window)))
+            return;
+        if (cw->viewable && compositing)
+            damage_cwin(cw);
+        if (cw->shape)
+            XFixesDestroyRegion(dpy, cw->shape);
+        cw->shape = None;
+        read_shaped(cw);
+        if (cw->viewable && compositing)
+            damage_cwin(cw);
+        return;
+    }
+    switch (ev->type) {
+    case CreateNotify:
+        if (ev->xcreatewindow.parent == root && !find_cwin(ev->xcreatewindow.window) &&
+            (cw = new_cwin(ev->xcreatewindow.window))) {
+            cw->next = cwins;           /* its place comes from the server */
+            cwins = cw;
+            cwins_stale = 1;
+        }
+        break;
+    case DestroyNotify:
+        if (ev->xdestroywindow.event == root) {
+            struct cwin **p;
+
+            for (p = &cwins; *p; p = &(*p)->next)
+                if ((*p)->win == ev->xdestroywindow.window) {
+                    cw = *p;
+                    *p = cw->next;
+                    free_cwin(cw, 1);
+                    break;
+                }
+        }
+        break;
+    case MapNotify:
+        if (ev->xmap.event == root && (cw = find_cwin(ev->xmap.window))) {
+            cw->viewable = 1;
+            cw->damaged = 0;            /* painted once it has drawn */
+            forget_contents(cw);
+            read_shaped(cw);
+            cwins_stale = 1;
+        }
+        break;
+    case UnmapNotify:
+        if (ev->xunmap.event == root && (cw = find_cwin(ev->xunmap.window))) {
+            if (cw->viewable && compositing)
+                damage_cwin(cw);
+            cw->viewable = 0;
+            forget_contents(cw);
+            cwins_stale = 1;
+        }
+        break;
+    case ConfigureNotify:
+        if (ev->xconfigure.window == root) {    /* the screen's new size (screen_w, screen_h) */
+            make_back_buffer();
+            if (compositing)
+                damage_screen();
+        } else if (ev->xconfigure.event == root && (cw = find_cwin(ev->xconfigure.window))) {
+            XConfigureEvent *e = &ev->xconfigure;
+
+            if (cw->viewable && compositing)
+                damage_cwin(cw);
+            if (e->width != cw->w || e->height != cw->h || e->border_width != cw->bw)
+                forget_contents(cw);    /* its contents are in a new pixmap */
+            else if (cw->shape)
+                XFixesTranslateRegion(dpy, cw->shape, e->x - cw->x, e->y - cw->y);
+            cw->x = e->x;
+            cw->y = e->y;
+            cw->w = e->width;
+            cw->h = e->height;
+            cw->bw = e->border_width;
+            if (e->above != cw->above)
+                cwins_stale = 1;
+            cw->above = e->above;
+            if (cw->viewable && compositing)
+                damage_cwin(cw);
+        }
+        break;
+    case ReparentNotify:
+    case CirculateNotify:
+        cwins_stale = 1;
+        break;
+    }
+}
+
+static void comp_init(void)
+{
+    const char *env = getenv("WCWM_COMPOSITE");
+    int event, error, major = 0, minor = 2;
+    XRenderPictureAttributes pa;
+    char name[32];
+    Atom selection;
+
+    if (env && !strcmp(env, "0")) {
+        fprintf(stderr, "wcwm: compositing off (WCWM_COMPOSITE=0)\n");
+        return;
+    }
+    if (!XCompositeQueryExtension(dpy, &event, &error) || !XCompositeQueryVersion(dpy, &major, &minor) ||
+        (major == 0 && minor < 2) || !XDamageQueryExtension(dpy, &damage_event, &error) ||
+        !XFixesQueryExtension(dpy, &event, &error) || !XRenderQueryExtension(dpy, &event, &error)) {
+        fprintf(stderr, "wcwm: the display server cannot composite\n");
+        return;
+    }
+    major = 1;
+    minor = 1;
+    XDamageQueryVersion(dpy, &major, &minor);
+    major = 2;
+    minor = 0;
+    XFixesQueryVersion(dpy, &major, &minor);
+    if (!XShapeQueryExtension(dpy, &shape_event, &error))
+        shape_event = -1;
+    snprintf(name, sizeof(name), "_NET_WM_CM_S%d", DefaultScreen(dpy));
+    selection = XInternAtom(dpy, name, False);
+    if (XGetSelectionOwner(dpy, selection) != None) {
+        fprintf(stderr, "wcwm: another compositing manager is running\n");
+        return;
+    }
+    XSetSelectionOwner(dpy, selection, check_win, CurrentTime);
+    comp_ok = 1;
+    pa.subwindow_mode = IncludeInferiors;
+    root_picture = XRenderCreatePicture(dpy, root,
+                                        XRenderFindVisualFormat(dpy, DefaultVisual(dpy, DefaultScreen(dpy))),
+                                        CPSubwindowMode, &pa);
+    make_back_buffer();
+    update_cwins();
+    if (!can_pause())
+        set_compositing(1);
+    comp_update();
+}
+
 /* ----------------------------------------------------------------- main */
 
 static void setup(void)
@@ -1618,14 +2102,16 @@ int main(int argc, char **argv)
     setup();
     setup_keys();
     check_prefs();
+    comp_init();
 
     for (;;) {
         fd_set fds;
         struct timeval tv = { 0, 250000 };
         int fd = ConnectionNumber(dpy);
 
-        /* events first; between them, the preferences and a pending focus */
+        /* events first; between them, painting, the preferences and a pending focus */
         if (!XPending(dpy)) {
+            comp_update();
             FD_ZERO(&fds);
             FD_SET(fd, &fds);
             if (pending_focus) {
@@ -1703,5 +2189,6 @@ int main(int argc, char **argv)
             }
             break;
         }
+        comp_event(&ev);
     }
 }
