@@ -13,10 +13,13 @@
 #
 # The QEMU window draws the VM's 3D (virgl) with the host's GPU, through the
 # toolbox's Mesa. Mesa cannot use a GPU run by NVIDIA's own driver and falls
-# back to drawing on the CPU (llvmpipe); so with that driver loaded, TB_GUI=1
-# also binds in the host's NVIDIA EGL libraries, which match its kernel
-# module, and the Wayland and GBM platforms they need. TB_HOSTGL=0 leaves
-# them out.
+# back to drawing on the CPU (llvmpipe); so when the screen is on such a GPU,
+# TB_GUI=1 also binds in the host's NVIDIA EGL libraries, which match its
+# kernel module, and the Wayland and GBM platforms they need. A laptop whose
+# screen is on its other GPU (AMD or Intel), beside an NVIDIA one, keeps
+# Mesa, which draws there; NVIDIA's EGL cannot, and QEMU would stop as soon
+# as the guest's 3D starts. TB_HOSTGL=1 binds them whenever NVIDIA's driver
+# is loaded, TB_HOSTGL=0 never.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,8 +27,22 @@ TB="$PROJECT/build/toolbox"
 [ -d "$TB/usr" ] || { echo "tb: toolbox not found at $TB (run ./wc toolbox)" >&2; exit 1; }
 
 export TB PROJECT
+# Is a screen connected to a card that another driver than NVIDIA's runs?
+other_screen() {
+    local c card
+    for c in /sys/class/drm/card*-*; do
+        [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+        card=${c##*/} card=${card%%-*}       # card2-eDP-1 -> card2
+        [ "$(basename "$(readlink -f "/sys/class/drm/$card/device/driver")")" = nvidia ] || return 0
+    done
+    return 1
+}
+
 export TB_GUI="${TB_GUI:-0}"
-export TB_HOSTGL="${TB_HOSTGL:-1}"
+if [ -z "${TB_HOSTGL:-}" ]; then
+    if other_screen; then TB_HOSTGL=0; else TB_HOSTGL=1; fi
+fi
+export TB_HOSTGL
 export TB_RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export TB_WAYLAND="${WAYLAND_DISPLAY:-}"
 export TB_DISPLAY="${DISPLAY:-}"
