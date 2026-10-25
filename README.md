@@ -475,9 +475,12 @@ source of the same release (`wine/VERSION`, checked against
 `wine/SHA256SUMS`), rebuilds only what they touch, about half a minute, and
 lays that over the packaged files.
 
-- Windows-side modules and the Wine server can be patched this way. A patch
-  to the server's protocol, to shared headers or to a module with a Unix-side
-  part is refused: those have to match the rest of the package.
+- Windows-side modules, the Unix-side libraries of modules (such as
+  `winex11.so`, the X11 display driver) and the Wine server can be patched
+  this way. A patch to the server's protocol or to shared headers is refused:
+  those have to match the rest of the package. A rebuilt Unix-side library
+  must need the same libraries as the packaged one, and no newer glibc than
+  the system image has, or the build stops.
 - The build stops when Arch moves to a newer Wine than `wine/VERSION`: bump
   the version and checksum, and drop the patches the new release already has.
 - Each patch says why it exists and where WineHQ stands on the same problem,

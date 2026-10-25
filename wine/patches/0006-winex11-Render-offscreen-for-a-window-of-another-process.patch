@@ -1,0 +1,46 @@
+winex11: Render offscreen for a window of another process.
+
+A client surface for a top-level window without children was rendered
+onscreen: its client X window is meant to be attached to the window's whole
+X window. Attaching needs the window's x11drv data, which only exists in
+the process that owns the window. When another process renders to it, the
+client window is created under the dummy parent and stays there, so what is
+presented to it never reaches the screen.
+
+Google Chrome draws every window from its GPU process. Its browser window
+has child windows, so it is rendered offscreen and copied, and shows; its
+bubbles ("Restore pages?", the profile and password bubbles) have none, and
+stayed blank white: with WINEDEBUG=+dxgi, Chrome 156 presents 18 frames to
+the profile bubble's swapchain, and +x11drv shows its client window created
+without window data and never made offscreen. As the "Restore pages?"
+bubble cannot be seen or closed, Chrome also keeps recording its exits as
+crashes, by design, until the user acknowledges the crash.
+
+Render offscreen when the window belongs to another process: the offscreen
+path copies each frame to the window's whole X window, which works from any
+process, as it does for Chrome's browser window. Tested on WinCraft 0.8.3
+(Wine 11.19) with the patched winex11.so bind-mounted over the installed
+one: Chrome's profile and "Restore pages?" bubbles are drawn with GPU
+compositing, closing the latter makes Chrome record a clean exit again, and
+the browser window is unchanged.
+
+Status: not for WineHQ as it stands. This patch was written with an LLM,
+and WineHQ does not accept LLM-generated code. No WineHQ bug describes
+this yet (bugs.winehq.org searched for "chrome popup blank", "chromium
+white popup" and "client window another process opengl" on 2026-10-25).
+Upstream master has the same code.
+---
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -222,8 +222,11 @@ static BOOL needs_client_window_clipping( HWND hwnd )
+ 
+ static BOOL needs_offscreen_rendering( HWND hwnd, BOOL raw )
+ {
++    DWORD pid;
++
+     if (!raw && NtUserGetDpiForWindow( hwnd ) != NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI )) return TRUE; /* needs DPI scaling */
+     if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow()) return TRUE; /* child window, needs compositing */
++    if (NtUserGetWindowThread( hwnd, &pid ) && pid != GetCurrentProcessId()) return TRUE; /* other process window, client window cannot be attached */
+     if (NtUserGetWindowRelative( hwnd, GW_CHILD )) return needs_client_window_clipping( hwnd ); /* window has children, needs compositing */
+     return FALSE;
+ }

@@ -69,6 +69,8 @@ WINE_INDEX = {
     "wine-fix-0004": "a click on a program's notification icon runs its default action again when the "
                      "program is not in English (Ditto)",
     "wine-fix-0005": "Google Chrome no longer crashes at every start after it was closed maximized",
+    "wine-fix-0006": "Google Chrome's bubbles (Restore pages?, profile, passwords) are drawn instead of "
+                     "staying blank white",
 }
 
 

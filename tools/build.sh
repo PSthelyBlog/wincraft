@@ -141,11 +141,12 @@ step_native() {
 # applied to the upstream source of the same release, and only what they touch
 # is rebuilt (with the package's own build options) and laid over the packaged
 # files in $B/wine-overlay: Windows-side modules, which are nearly all of Wine,
-# and the Wine server.
+# the Unix-side libraries of modules (such as winex11.so), and the Wine server.
 #
-# A patch to the server's protocol, to shared headers or to a module with a
-# Unix-side part needs a full Wine build, because those have to match the rest
-# of the package; this step refuses it rather than build a mismatched half.
+# A patch to the server's protocol or to shared headers needs a full Wine build,
+# because those have to match the rest of the package; this step refuses it
+# rather than build a mismatched half. A rebuilt Unix-side library must need
+# the same libraries as the packaged one, and no newer glibc than the stage's.
 step_wine() {
     local out=$B/wine-overlay src=$B/wine-src bld=$B/wine-build
     local patches=($W/wine/patches/*.patch)
@@ -186,32 +187,50 @@ step_wine() {
             { echo "wine: $(basename "$p") does not apply to Wine $ver" >&2; exit 1; }
     done
 
-    # What to rebuild: the dlls/<name> and programs/<name> directories the
-    # patches touch (tests are not built), and the server. The server's
-    # protocol is generated into files shared with the rest of Wine.
-    local dirs bad
-    dirs=$(sed -n 's|^+++ b/||p' "${patches[@]}" | cut -f1 | awk -F/ '
-        ($1 == "dlls" || $1 == "programs") && NF >= 3 { if ($3 != "tests") print $1 "/" $2; next }
-        $1 == "server" && NF == 2 && $2 !~ /^(protocol\.def|request_handlers\.h|request_trace\.h)$/ { print "server"; next }
-        { print "!" $0 }' | sort -u)
-    bad=$(echo "$dirs" | sed -n 's/^!//p')
+    # What to rebuild, for each file the patches touch: in dlls/<name> and
+    # programs/<name> (tests are not built), the module's Windows side, or its
+    # Unix-side library for a file built into it ("#pragma makedep unix"), and
+    # both for a header of a module that has one; the server for its own files.
+    # The server's protocol is generated into files shared with the rest of Wine.
+    local f d module unixlib arch dirs="" bad="" targets=()
+    for f in $(sed -n 's|^+++ b/||p' "${patches[@]}" | cut -f1 | sort -u); do
+        case $f in
+            dlls/*/tests/*|programs/*/tests/*) ;;
+            dlls/*/*|programs/*/*)
+                d=$(echo $f | cut -d/ -f1-2)
+                if grep -q '^#pragma makedep unix' $src/$f 2>/dev/null; then
+                    dirs+=" $d:unix"
+                elif [ "${f%.h}" != "$f" ] && grep -q '^UNIXLIB' $src/$d/Makefile.in; then
+                    dirs+=" $d $d:unix"
+                else
+                    dirs+=" $d"
+                fi
+                ;;
+            server/protocol.def|server/request_handlers.h|server/request_trace.h|server/*/*) bad+=" $f" ;;
+            server/*) dirs+=" server" ;;
+            *) bad+=" $f" ;;
+        esac
+    done
     if [ -n "$bad" ]; then
         echo "wine: these patched files need a full Wine build:" >&2
-        echo "$bad" | sed 's/^/        /' >&2
+        printf '        %s\n' $bad >&2
         exit 1
     fi
 
-    local d module arch targets=()
-    for d in $dirs; do
+    for d in $(printf '%s\n' $dirs | sort -u); do
         if [ $d = server ]; then
             targets+=(server/wineserver)
             continue
         fi
-        module=$(sed -n 's/^MODULE *= *//p' $src/$d/Makefile.in)
-        [ -n "$module" ] || { echo "wine: $d does not build a module" >&2; exit 1; }
-        if grep -q '^UNIXLIB' $src/$d/Makefile.in; then
-            echo "wine: $module has a Unix-side part, which needs a full Wine build" >&2
-            exit 1
+        module=$(sed -n 's/^MODULE *= *//p' $src/${d%:unix}/Makefile.in)
+        [ -n "$module" ] || { echo "wine: ${d%:unix} does not build a module" >&2; exit 1; }
+        if [ "${d%:unix}" != "$d" ]; then
+            d=${d%:unix}
+            unixlib=$(sed -n 's/^UNIXLIB *= *//p' $src/$d/Makefile.in)
+            [ -n "$unixlib" ] && [ -e $S/usr/lib/wine/x86_64-unix/$unixlib ] ||
+                { echo "wine: $module has no Unix-side library in the staged package" >&2; exit 1; }
+            targets+=($d/$unixlib)
+            continue
         fi
         for arch in x86_64 i386; do
             if [ -e $S/usr/lib/wine/$arch-windows/$module ]; then
@@ -224,7 +243,8 @@ step_wine() {
     say "Building $(printf '%s\n' "${targets[@]##*/}" | sort -u | xargs) for Wine $ver"
     # The options the Arch package is built with, so that the rebuilt files
     # match the ones they replace: its configure options and cross-compiler
-    # flags, and makepkg's flags for the host side (the server).
+    # flags, and makepkg's flags for the host side (the server, the Unix-side
+    # libraries).
     local cflags ldflags
     cflags=$(bash -c '. /etc/makepkg.conf && printf %s "$CFLAGS"')
     ldflags=$(bash -c '. /etc/makepkg.conf && printf %s "$LDFLAGS"')
@@ -234,7 +254,7 @@ step_wine() {
         make -j"$(nproc)" "${targets[@]}") > $B/wine-build.log 2>&1 ||
         { tail -30 $B/wine-build.log; exit 1; }
 
-    local t strip
+    local t strip lib pkg newer
     for t in "${targets[@]}"; do
         if [ $t = server/wineserver ]; then
             mkdir -p $out/usr/bin
@@ -242,6 +262,25 @@ step_wine() {
             chmod --reference=$S/usr/bin/wineserver $out/usr/bin/wineserver
             if grep -aq /dev/ntsync $S/usr/bin/wineserver && ! grep -aq /dev/ntsync $out/usr/bin/wineserver; then
                 echo "wine: the rebuilt wineserver lacks ntsync support (no linux/ntsync.h in the toolbox?)" >&2
+                exit 1
+            fi
+            continue
+        fi
+        if [ "${t%.so}" != "$t" ]; then
+            lib=$out/usr/lib/wine/x86_64-unix/${t##*/} pkg=$S/usr/lib/wine/x86_64-unix/${t##*/}
+            mkdir -p ${lib%/*}
+            strip --strip-unneeded -o $lib $bld/$t
+            chmod --reference=$pkg $lib
+            # It must load where the packaged one does: the toolbox's packages
+            # can be newer than the stage's.
+            if [ "$(objdump -p $lib | awk '$1 == "NEEDED"' | sort)" != "$(objdump -p $pkg | awk '$1 == "NEEDED"' | sort)" ]; then
+                echo "wine: the rebuilt ${t##*/} needs other libraries than the packaged one" >&2
+                exit 1
+            fi
+            newer=$(comm -23 <(objdump -T $lib | grep -o 'GLIBC_[0-9.]*' | sort -u) \
+                             <(objdump -p $S/usr/lib/libc.so.6 $S/usr/lib/libm.so.6 | grep -o 'GLIBC_[0-9.]*' | sort -u))
+            if [ -n "$newer" ]; then
+                echo "wine: the rebuilt ${t##*/} needs a newer glibc than the stage's ($(echo $newer))" >&2
                 exit 1
             fi
             continue
